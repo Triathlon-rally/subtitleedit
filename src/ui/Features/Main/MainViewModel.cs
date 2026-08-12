@@ -12942,6 +12942,10 @@ private async Task ShowTeletextAlignmentPicker()
     };
 
     SetAlignmentToSelected(alignment);
+    foreach (var item in selectedItems)
+{
+    item.RefreshTeletextDisplay();
+}
     _updateAudioVisualizer = true;
 }
 }
