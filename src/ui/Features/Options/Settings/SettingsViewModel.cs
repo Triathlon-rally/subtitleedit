@@ -467,7 +467,10 @@ public partial class SettingsViewModel : ObservableObject
         Themes = [Se.Language.General.System, Se.Language.General.Light, Se.Language.General.Dark, Se.Language.General.Classic, "Pastel"];
         SelectedTheme = Themes[0];
 
-        var iconFolders = Directory.GetDirectories(Se.ThemesFolder).Select(p => Path.GetFileName(p)).ToList();
+        var iconFolders = Directory.Exists(Se.ThemesFolder)
+    ? Directory.GetDirectories(Se.ThemesFolder).Select(p => Path.GetFileName(p)).ToList()
+    : new List<string>();
+    
         iconFolders.Insert(0, Se.Language.General.Auto);
         IconThemes = new ObservableCollection<string>(iconFolders);
         SelectedIconTheme = IconThemes[0];
