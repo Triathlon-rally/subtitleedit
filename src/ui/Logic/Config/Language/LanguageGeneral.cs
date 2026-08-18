@@ -457,6 +457,7 @@ public class LanguageGeneral
     public string RemoveUnderline { get; set; }
     public string Rename { get; set; }
     public string Replace { get; set; }
+    public string ReplaceLine { get; set; } = string.Empty;
     public string ReplaceWith { get; set; }
     public string RequiresRestart { get; set; }
     public string Reset { get; set; }
@@ -1203,6 +1204,7 @@ public class LanguageGeneral
         RemoveUnderline = "Remove underline";
         Rename = "Rename";
         Replace = "Replace";
+        ReplaceLine = "Replace line";
         ReplaceWith = "Replace with";
         RequiresRestart = "Requires restart";
         Reset = "Reset";
