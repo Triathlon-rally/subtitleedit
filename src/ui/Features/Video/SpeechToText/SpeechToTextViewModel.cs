@@ -2060,14 +2060,15 @@ public partial class SpeechToTextViewModel : ObservableObject
         }
 
         var whisperFolder = engine.GetAndCreateWhisperFolder();
-        var srtCandidates = GetResultFileCandidates(".srt", waveFileName, videoFileName, whisperFolder, outputText, _sttTempFolder);
-        var vttCandidates = GetResultFileCandidates(".vtt", waveFileName, videoFileName, whisperFolder, outputText, _sttTempFolder);
-        var assaCandidates = GetResultFileCandidates(".ass", waveFileName, videoFileName, whisperFolder, outputText, _sttTempFolder);
+        var sttTempFolder = _sttTempFolder ?? string.Empty;
+
+        var srtCandidates = GetResultFileCandidates(".srt", waveFileName, videoFileName, whisperFolder, outputText, sttTempFolder);
+        var vttCandidates = GetResultFileCandidates(".vtt", waveFileName, videoFileName, whisperFolder, outputText, sttTempFolder);
+        var assaCandidates = GetResultFileCandidates(".ass", waveFileName, videoFileName, whisperFolder, outputText, sttTempFolder);
 
         var srtFileName = srtCandidates.FirstOrDefault(File.Exists);
         var vttFileName = vttCandidates.FirstOrDefault(File.Exists);
         var assaFileName = assaCandidates.FirstOrDefault(File.Exists);
-
         if (string.IsNullOrEmpty(srtFileName) && string.IsNullOrEmpty(vttFileName))
         {
             resultTexts = new List<ResultText>();
