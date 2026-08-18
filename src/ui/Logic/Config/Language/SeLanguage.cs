@@ -1,4 +1,6 @@
-﻿using System.Text.Encodings.Web;
+﻿using System;
+using System.Reflection;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using Nikse.SubtitleEdit.Logic.Config.Language.Assa;
 using Nikse.SubtitleEdit.Logic.Config.Language.Edit;
@@ -42,6 +44,46 @@ public class SeLanguage
     /// translation is generated from. Used both by the "Save language file" shortcut in the main
     /// window and by the test that checks the checked-in English.json is still in sync with the code.
     /// </summary>
+    public static void ApplyEnglishFallbacks(SeLanguage language)
+{
+    var english = new SeLanguage();
+    ApplyEnglishFallbacks(language, english);
+}
+
+private static void ApplyEnglishFallbacks(object target, object fallback)
+{
+    foreach (var property in target.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
+    {
+        if (!property.CanRead || !property.CanWrite)
+        {
+            continue;
+        }
+
+        var targetValue = property.GetValue(target);
+        var fallbackValue = property.GetValue(fallback);
+
+        if (property.PropertyType == typeof(string))
+        {
+            if (string.IsNullOrEmpty((string?)targetValue) &&
+                fallbackValue is string fallbackText &&
+                !string.IsNullOrEmpty(fallbackText))
+            {
+                property.SetValue(target, fallbackText);
+            }
+
+            continue;
+        }
+
+        if (targetValue != null &&
+            fallbackValue != null &&
+            property.PropertyType.Namespace?.StartsWith(
+                "Nikse.SubtitleEdit.Logic.Config.Language",
+                StringComparison.Ordinal) == true)
+        {
+            ApplyEnglishFallbacks(targetValue, fallbackValue);
+        }
+    }
+}
     public static string ToJson(SeLanguage language)
     {
         var json = JsonSerializer.Serialize(language, new JsonSerializerOptions

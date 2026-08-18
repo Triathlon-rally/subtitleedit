@@ -547,6 +547,7 @@ public class Se
             var language = JsonSerializer.Deserialize(stream, SeLanguageJsonContext.Default.SeLanguage);
             if (language != null)
             {
+                SeLanguage.ApplyEnglishFallbacks(language);
                 Language = language;
                 _loadedLanguage = Settings.General.Language;
             }
@@ -568,10 +569,19 @@ public class Se
         try
         {
             await using var stream = System.IO.File.OpenRead(jsonFileName);
-            var language = await JsonSerializer.DeserializeAsync(stream, SeLanguageJsonContext.Default.SeLanguage);
-            Language = language ?? new SeLanguage();
-            _loadedLanguage = language == null ? null : Path.GetFileNameWithoutExtension(jsonFileName);
-        }
+var language = await JsonSerializer.DeserializeAsync(stream, SeLanguageJsonContext.Default.SeLanguage);
+
+if (language != null)
+{
+    SeLanguage.ApplyEnglishFallbacks(language);
+    Language = language;
+}
+else
+{
+    Language = new SeLanguage();
+}
+
+_loadedLanguage = language == null ? null : Path.GetFileNameWithoutExtension(jsonFileName);      }
         catch (Exception exception)
         {
             Se.LogError(exception, "Failed to load UI language from " + jsonFileName);
