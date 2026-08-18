@@ -112,7 +112,9 @@ public static class FileTypeAssociationsManager
         }
     }
 
-    private static string GetIconPath(FileTypeAssociationViewModel item)
+private static string GetIconPath(FileTypeAssociationViewModel item)
+{
+    try
     {
         var folder = Path.Combine(Se.DataFolder, "FileTypes");
         if (!Directory.Exists(folder))
@@ -124,24 +126,29 @@ public static class FileTypeAssociationsManager
 
         if (!File.Exists(iconFileName))
         {
-            try
+            var uri = new Uri(item.IconPath);
+            using var stream = AssetLoader.Open(uri);
+
+            if (stream != null &&
+                item.IconPath.EndsWith(".ico", StringComparison.OrdinalIgnoreCase))
             {
-                var uri = new Uri(item.IconPath);
-                using var stream = AssetLoader.Open(uri);
-                if (stream != null && item.IconPath.EndsWith(".ico", StringComparison.OrdinalIgnoreCase))
-                {
-                    using var fileStream = new FileStream(iconFileName, FileMode.Create, FileAccess.Write);
-                    stream.CopyTo(fileStream);
-                }
-            }
-            catch (Exception ex)
-            {
-                Se.LogError(ex, "GetIconPath");
+                using var fileStream = new FileStream(
+                    iconFileName,
+                    FileMode.Create,
+                    FileAccess.Write);
+
+                stream.CopyTo(fileStream);
             }
         }
 
         return File.Exists(iconFileName) ? iconFileName : string.Empty;
     }
+    catch (Exception ex)
+    {
+        Se.LogError(ex, "GetIconPath");
+        return string.Empty;
+    }
+}
 
     private static async Task ShowFileAssociationErrorAsync(
         Window? window,
