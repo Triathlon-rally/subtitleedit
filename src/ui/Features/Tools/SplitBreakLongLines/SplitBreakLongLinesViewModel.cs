@@ -5,11 +5,13 @@ using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Nikse.SubtitleEdit.Core.Common;
+using Nikse.SubtitleEdit.Core.SubtitleFormats;
 using Nikse.SubtitleEdit.Features.Main;
 using Nikse.SubtitleEdit.Logic.Config;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Globalization;
 
 namespace Nikse.SubtitleEdit.Features.Tools.SplitBreakLongLines;
 
@@ -27,6 +29,7 @@ public partial class SplitBreakLongLinesViewModel : ObservableObject, IClosingCl
 
     [ObservableProperty] private bool _rebalanceLongLines;
     [ObservableProperty] private bool _rebalanceOnlyLinesTooLong;
+    [ObservableProperty] private bool _applyMinimumGapToAllSubtitles;
     [ObservableProperty] private int _unbreakLinesShorterThan;
 
     [ObservableProperty] private string _fixesInfo;
@@ -96,6 +99,7 @@ public partial class SplitBreakLongLinesViewModel : ObservableObject, IClosingCl
 
             var splitCount = 0;
             var rebalanceCount = 0;
+            var gapCount = 0;
             var maxCharactersPerSubtitle = MaxNumberOfLines * SingleLineMaxLength;
 
             if (SplitLongLines)
@@ -104,14 +108,40 @@ public partial class SplitBreakLongLinesViewModel : ObservableObject, IClosingCl
                 {
                     var item = new SubtitleLineViewModel(_allSubtitles[index]);
 
-                    var splitLines = Split(item, maxCharactersPerSubtitle, SingleLineMaxLength);
-                    if (splitLines.Count > 1)
+                    var splitLines = Split(
+                        item,
+                        maxCharactersPerSubtitle,
+                        SingleLineMaxLength,
+                        _languageCode,
+                        makeCompliant: true,
+                        GetGeneralMinimumGapMs());
+
+                    var textChanged = splitLines.Count == 1 && splitLines[0].Text != item.Text;
+                    if (splitLines.Count > 1 || textChanged)
                     {
                         splitCount++;
                         var originalPreview = GetTextPreview(item.Text, 50);
-                        var firstSplitPreview = GetTextPreview(splitLines[0].Text, 50);
-                        var fixDescription = string.Format(Se.Language.Tools.SplitBreakLongLines.SplitIntoXLines, splitLines.Count, originalPreview, firstSplitPreview);
-                        var fixItem = new SplitBreakLongLinesItem(Se.Language.Tools.SplitBreakLongLines.SplitLongLine, index + 1, fixDescription, item);
+                        string fixDescription;
+                        if (splitLines.Count > 1)
+                        {
+                            var firstSplitPreview = GetTextPreview(splitLines[0].Text, 50);
+                            fixDescription = string.Format(
+                                Se.Language.Tools.SplitBreakLongLines.SplitIntoXLines,
+                                splitLines.Count,
+                                originalPreview,
+                                firstSplitPreview);
+                        }
+                        else
+                        {
+                            var correctedPreview = GetTextPreview(splitLines[0].Text.Replace("\r\n", " · ").Replace("\n", " · "), 60);
+                            fixDescription = $"'{originalPreview}' → '{correctedPreview}'";
+                        }
+
+                        var fixItem = new SplitBreakLongLinesItem(
+                            Se.Language.Tools.SplitBreakLongLines.SplitLongLine,
+                            index + 1,
+                            fixDescription,
+                            item);
                         Fixes.Add(fixItem);
                     }
                     foreach (var s in splitLines)
@@ -156,20 +186,74 @@ public partial class SplitBreakLongLinesViewModel : ObservableObject, IClosingCl
                         var beforePreview = GetTextPreview(item.Text.Replace("\r\n", " · ").Replace("\n", " · "), 60);
                         var afterPreview = GetTextPreview(rebalancedText.Replace("\r\n", " · ").Replace("\n", " · "), 60);
                         var fixDescription = $"'{beforePreview}' → '{afterPreview}'";
-                        var fixItem = new SplitBreakLongLinesItem(Se.Language.Tools.SplitBreakLongLines.RebalanceLongLine, index + 1, fixDescription, item);
+                        var fixItem = new SplitBreakLongLinesItem(
+                            Se.Language.Tools.SplitBreakLongLines.RebalanceLongLine,
+                            index + 1,
+                            fixDescription,
+                            item,
+                            isSelectable: true,
+                            proposedText: rebalancedText);
                         Fixes.Add(fixItem);
-                        item.Text = rebalancedText;
                     }
                 }
             }
 
-            if (splitCount == 0 && rebalanceCount == 0)
+            if (ApplyMinimumGapToAllSubtitles)
+            {
+                var minimumGapMs = GetGeneralMinimumGapMs();
+                const double toleranceMs = 10.0;
+
+                for (var index = 0; index < AllSubtitlesFixed.Count - 1; index++)
+                {
+                    var current = AllSubtitlesFixed[index];
+                    var next = AllSubtitlesFixed[index + 1];
+                    var currentGapMs = next.StartTime.TotalMilliseconds - current.EndTime.TotalMilliseconds;
+
+                    if (currentGapMs >= minimumGapMs - toleranceMs)
+                    {
+                        continue;
+                    }
+
+                    var newEndMs = next.StartTime.TotalMilliseconds - minimumGapMs;
+                    if (newEndMs <= current.StartTime.TotalMilliseconds)
+                    {
+                        continue;
+                    }
+
+                    var before = new TimeCode(currentGapMs).ToShortDisplayString();
+                    current.EndTime = TimeSpan.FromMilliseconds(newEndMs);
+                    current.UpdateDuration();
+                    var newGapMs = next.StartTime.TotalMilliseconds - current.EndTime.TotalMilliseconds;
+                    var after = new TimeCode(newGapMs).ToShortDisplayString();
+                    gapCount++;
+
+                    Fixes.Add(new SplitBreakLongLinesItem(
+                        Se.Language.Main.Menu.ApplyMinGap,
+                        index + 1,
+                        $"Gap: {before} → {after}",
+                        current));
+                }
+            }
+
+            // Splitting clones the source SubtitleLineViewModel, including its Number.
+            // When at least one subtitle event was split, renumber the complete result once
+            // at the end so newly created events do not keep duplicate numbers.
+            if (splitCount > 0)
+            {
+                RenumberSubtitles(AllSubtitlesFixed);
+            }
+
+            if (splitCount == 0 && rebalanceCount == 0 && gapCount == 0)
             {
                 FixesInfo = Se.Language.Tools.ApplyDurationLimits.NoChangesNeeded;
                 return;
             }
 
-            if (rebalanceCount == 0)
+            if (gapCount > 0)
+            {
+                FixesInfo = $"Split: {splitCount}, rebalanced: {rebalanceCount}, gaps corrected: {gapCount}";
+            }
+            else if (rebalanceCount == 0)
             {
                 FixesInfo = string.Format(Se.Language.Tools.SplitBreakLongLines.LinesSplitX, splitCount);
             }
@@ -178,6 +262,25 @@ public partial class SplitBreakLongLinesViewModel : ObservableObject, IClosingCl
                 FixesInfo = string.Format(Se.Language.Tools.SplitBreakLongLines.LinesSplitXLinesRebalancedY, splitCount, rebalanceCount);
             }
         });
+    }
+
+    public static void RenumberSubtitles(List<SubtitleLineViewModel> subtitles)
+    {
+        for (var index = 0; index < subtitles.Count; index++)
+        {
+            subtitles[index].Number = index + 1;
+        }
+    }
+
+    private static double GetGeneralMinimumGapMs()
+    {
+        var general = Se.Settings.General;
+        if (general.UseFrameMode)
+        {
+            return SubtitleFormat.FramesToMilliseconds(general.MinimumBetweenLines.Frames);
+        }
+
+        return general.MinimumBetweenLines.Milliseconds;
     }
 
     public static bool HasLineTooLong(string? text, int singleLineMaxLength, int maxNumberOfLines)
@@ -201,44 +304,157 @@ public partial class SplitBreakLongLinesViewModel : ObservableObject, IClosingCl
 
     public static List<SubtitleLineViewModel> Split(SubtitleLineViewModel item, int maxCharactersPerSubtitle, int singleLineMaxLength)
     {
+        return Split(item, maxCharactersPerSubtitle, singleLineMaxLength, "en", makeCompliant: false);
+    }
+
+    public static List<SubtitleLineViewModel> Split(
+        SubtitleLineViewModel item,
+        int maxCharactersPerSubtitle,
+        int singleLineMaxLength,
+        string languageCode,
+        bool makeCompliant)
+    {
+        return Split(
+            item,
+            maxCharactersPerSubtitle,
+            singleLineMaxLength,
+            languageCode,
+            makeCompliant,
+            minimumGapMs: 0);
+    }
+
+    public static List<SubtitleLineViewModel> Split(
+        SubtitleLineViewModel item,
+        int maxCharactersPerSubtitle,
+        int singleLineMaxLength,
+        string languageCode,
+        bool makeCompliant,
+        double minimumGapMs)
+    {
         var lines = new List<SubtitleLineViewModel>();
 
-        // Guard clauses
         var originalText = item.Text ?? string.Empty;
         var originalStartMs = item.StartTime.TotalMilliseconds;
         var originalEndMs = item.EndTime.TotalMilliseconds;
         var originalDurationMs = Math.Max(0, originalEndMs - originalStartMs);
 
-        // Per-line maximum for visual wrapping and per-subtitle maximum for splitting
         var perLineMax = Math.Max(5, singleLineMaxLength);
         var perSubtitleMax = Math.Max(perLineMax, maxCharactersPerSubtitle);
+        var maxNumberOfLines = Math.Max(1, (int)Math.Ceiling(perSubtitleMax / (double)perLineMax));
 
-        // If already short enough, return as-is
-        var plainText = HtmlUtil.RemoveHtmlTags(originalText, true).Replace("\r\n", " ").Replace('\n', ' ').Trim();
-        if (plainText.Length <= perSubtitleMax || string.IsNullOrWhiteSpace(plainText))
+        var plainText = HtmlUtil.RemoveHtmlTags(originalText, true)
+            .Replace("\r\n", " ")
+            .Replace('\n', ' ')
+            .Trim();
+
+        if (string.IsNullOrWhiteSpace(plainText))
         {
             lines.Add(item);
             return lines;
         }
 
-        // Prepare segments trying to split at natural boundaries
-        var remaining = originalText.Trim();
+        var originalPlainLines = HtmlUtil.RemoveHtmlTags(originalText, true).SplitToLines();
+        var hasTooManyLines = originalPlainLines.Count > maxNumberOfLines;
+        var hasOverlongExistingLine = false;
+        foreach (var originalLine in originalPlainLines)
+        {
+            if (originalLine.Length > perLineMax)
+            {
+                hasOverlongExistingLine = true;
+                break;
+            }
+        }
+
+        // Legacy SE5 behavior used by the existing three-argument overload:
+        // split only when the total text exceeds the subtitle capacity, except that an
+        // already multi-line subtitle with an overlong line is allowed to split at its
+        // existing line boundary (SE4 parity regression fix).
+        if (!makeCompliant)
+        {
+            if (plainText.Length <= perSubtitleMax && !hasTooManyLines)
+            {
+                if (!(originalPlainLines.Count > 1 && hasOverlongExistingLine))
+                {
+                    lines.Add(item);
+                    return lines;
+                }
+            }
+        }
+        else
+        {
+            // Split-long-lines should be a complete correction pass. Already compliant
+            // subtitles must remain byte-for-byte untouched, including intentionally
+            // unbalanced line breaks.
+            if (!hasTooManyLines && !hasOverlongExistingLine)
+            {
+                lines.Add(item);
+                return lines;
+            }
+
+            // A too-long single-line subtitle that still fits inside one subtitle event
+            // is locally balanced here. This is deliberately not the global "Rebalance
+            // long lines" operation: only this non-compliant subtitle is changed.
+            if (originalPlainLines.Count == 1 && plainText.Length <= perSubtitleMax)
+            {
+                var balanced = BalanceSegment(originalText);
+                if (IsCompliant(balanced))
+                {
+                    var balancedItem = new SubtitleLineViewModel(item, true)
+                    {
+                        Text = balanced,
+                        StartTime = item.StartTime,
+                        EndTime = item.EndTime,
+                    };
+
+                    AdjustTeletextRowForLineCountChange(
+                        balancedItem,
+                        item.MarginV,
+                        originalPlainLines.Count,
+                        GetPlainLineCount(balanced));
+
+                    balancedItem.UpdateDuration();
+                    lines.Add(balancedItem);
+                    return lines;
+                }
+            }
+        }
+
+        // Prepare event segments. For an existing multi-line subtitle with an overlong
+        // line, keep its editorial line boundaries as event split points. This matches
+        // the useful SE4 behavior: a sentence/line boundary is not silently rebalanced
+        // across the whole subtitle just to avoid creating a new event.
         var segments = new List<string>();
+        var remaining = originalText.Trim();
+
+        if (plainText.Length <= perSubtitleMax && originalPlainLines.Count > 1 &&
+            (hasOverlongExistingLine || hasTooManyLines))
+        {
+            foreach (var originalLine in originalText.SplitToLines())
+            {
+                if (!string.IsNullOrWhiteSpace(originalLine))
+                {
+                    segments.Add(originalLine.Trim());
+                }
+            }
+            remaining = string.Empty;
+        }
 
         while (!string.IsNullOrEmpty(remaining))
         {
-            var remainingPlain = HtmlUtil.RemoveHtmlTags(remaining, true).Replace("\r\n", " ").Replace('\n', ' ').Trim();
+            var remainingPlain = HtmlUtil.RemoveHtmlTags(remaining, true)
+                .Replace("\r\n", " ")
+                .Replace('\n', ' ')
+                .Trim();
+
             if (remainingPlain.Length <= perSubtitleMax)
             {
                 segments.Add(remaining.Trim());
                 break;
             }
 
-            // Find best split position that keeps plain length <= perSubtitleMax
             var splitIdx = FindBestSplitIndexByPlainLength(remaining, perSubtitleMax);
             if (splitIdx <= 0)
             {
-                // Fallback to previous logic using raw index near limit
                 var approxCut = Math.Min(remaining.Length - 1, perSubtitleMax);
                 splitIdx = FindBestSplitIndex(remaining, approxCut);
             }
@@ -260,20 +476,37 @@ public partial class SplitBreakLongLinesViewModel : ObservableObject, IClosingCl
             return lines;
         }
 
-        // Distribute time proportional to character counts per segment
+        // In one-pass correction mode, locally balance only the segments that need it.
+        // This guarantees that Split long lines does not create new overlong single-line
+        // subtitles that would require a second global Rebalance run.
+        if (makeCompliant)
+        {
+            for (var i = 0; i < segments.Count; i++)
+            {
+                if (HasLineTooLong(segments[i], perLineMax, maxNumberOfLines))
+                {
+                    segments[i] = BalanceSegment(segments[i]);
+                }
+            }
+        }
+
         var charCounts = new List<int>();
         var totalChars = 0;
         foreach (var seg in segments)
         {
-            var cnt = HtmlUtil.RemoveHtmlTags(seg, true).Replace("\r\n", " ").Replace('\n', ' ').Length;
+            var cnt = HtmlUtil.RemoveHtmlTags(seg, true)
+                .Replace("\r\n", " ")
+                .Replace('\n', ' ')
+                .Length;
             if (cnt <= 0)
             {
-                cnt = 1; // avoid zero to ensure some time
+                cnt = 1;
             }
 
             charCounts.Add(cnt);
             totalChars += cnt;
         }
+
         if (totalChars <= 0)
         {
             totalChars = segments.Count;
@@ -284,41 +517,63 @@ public partial class SplitBreakLongLinesViewModel : ObservableObject, IClosingCl
             }
         }
 
-        // Build new subtitle lines
+        // Keep the original outer timecodes, but reserve the configured minimum gap
+        // between newly created subtitle events. If the source duration is too short to
+        // fit the requested gap, clamp it so durations never become negative.
+        var gapMs = 0.0;
+        if (segments.Count > 1)
+        {
+            gapMs = Math.Max(0, minimumGapMs);
+            var maxGapThatFits = originalDurationMs / (segments.Count - 1);
+            gapMs = Math.Min(gapMs, maxGapThatFits);
+        }
+
+        var totalGapMs = gapMs * Math.Max(0, segments.Count - 1);
+        var availableTextDurationMs = Math.Max(0, originalDurationMs - totalGapMs);
+
         double accumulatedMs = originalStartMs;
         for (var i = 0; i < segments.Count; i++)
         {
             var segText = segments[i];
 
-            // Calculate duration for this segment
             double segDurationMs;
             if (i == segments.Count - 1)
             {
-                // last segment takes the rest (avoid rounding drift)
                 segDurationMs = Math.Max(0, originalEndMs - accumulatedMs);
             }
             else
             {
-                segDurationMs = originalDurationMs * (charCounts[i] / (double)totalChars);
-                // Ensure we don't overrun
-                segDurationMs = Math.Max(0, Math.Min(segDurationMs, Math.Max(0, originalEndMs - accumulatedMs)));
+                segDurationMs = availableTextDurationMs * (charCounts[i] / (double)totalChars);
+                segDurationMs = Math.Max(
+                    0,
+                    Math.Min(
+                        segDurationMs,
+                        Math.Max(0, originalEndMs - accumulatedMs - gapMs)));
             }
 
-            // Keep the segment text as-is; auto-wrapping is opt-in via the
-            // RebalanceLongLines option, which runs its own AutoBreakLine pass.
             var newLine = new SubtitleLineViewModel(item, true)
             {
                 Text = segText,
                 StartTime = TimeSpan.FromMilliseconds(accumulatedMs),
-                EndTime = TimeSpan.FromMilliseconds(accumulatedMs + segDurationMs)
+                EndTime = TimeSpan.FromMilliseconds(accumulatedMs + segDurationMs),
             };
+
+            AdjustTeletextRowForLineCountChange(
+                newLine,
+                item.MarginV,
+                originalPlainLines.Count,
+                GetPlainLineCount(segText));
+
             newLine.UpdateDuration();
             lines.Add(newLine);
 
             accumulatedMs += segDurationMs;
+            if (i < segments.Count - 1)
+            {
+                accumulatedMs += gapMs;
+            }
         }
 
-        // In rare rounding cases, force end of last to original end
         if (lines.Count > 0)
         {
             var last = lines[^1];
@@ -328,7 +583,58 @@ public partial class SplitBreakLongLinesViewModel : ObservableObject, IClosingCl
 
         return lines;
 
-        // Local helper: find the best split index near a target index (raw length based)
+        static int GetPlainLineCount(string text)
+        {
+            return HtmlUtil.RemoveHtmlTags(text ?? string.Empty, true).SplitToLines().Count;
+        }
+
+        static void AdjustTeletextRowForLineCountChange(
+            SubtitleLineViewModel subtitle,
+            string originalMarginV,
+            int oldLineCount,
+            int newLineCount)
+        {
+            if (oldLineCount == newLineCount || oldLineCount < 1 || newLineCount < 1)
+            {
+                return;
+            }
+
+            if (!int.TryParse(originalMarginV, out var originalRow))
+            {
+                return;
+            }
+
+            // Double-height Teletext uses two physical rows per text line.
+            // Keep the subtitle at its existing vertical area and move the start row
+            // only by the number of rows gained/lost through the line-count change.
+            //
+            // Examples:
+            // 2 lines at 21 -> 1 line at 23
+            // 2 lines at 19 -> 1 line at 21
+            // 2 lines at 20 -> 1 line at 22
+            // and the inverse for 1 -> 2.
+            const int rowsPerTextLine = 2;
+            var rowDelta = (oldLineCount - newLineCount) * rowsPerTextLine;
+            var adjustedRow = originalRow + rowDelta;
+
+            if (adjustedRow is >= 1 and <= TeletextRowHelper.BottomRow)
+            {
+                subtitle.MarginV = adjustedRow.ToString(CultureInfo.InvariantCulture);
+            }
+        }
+
+        string BalanceSegment(string text)
+        {
+            // max+1 prevents AutoBreakLine from collapsing a compliant two-line result
+            // back to one line while still allowing a long single line to be balanced.
+            return Utilities.AutoBreakLine(text, perLineMax, perLineMax + 1, languageCode);
+        }
+
+        bool IsCompliant(string text)
+        {
+            return !HasLineTooLong(text, perLineMax, maxNumberOfLines);
+        }
+
         static int FindBestSplitIndex(string text, int targetIndex)
         {
             if (string.IsNullOrEmpty(text))
@@ -336,14 +642,12 @@ public partial class SplitBreakLongLinesViewModel : ObservableObject, IClosingCl
                 return 0;
             }
 
-            // Prefer line breaks if present before target
             var lbBefore = text.LastIndexOf('\n', Math.Min(targetIndex, text.Length - 1));
             if (lbBefore >= 0 && lbBefore >= targetIndex - 10)
             {
                 return lbBefore;
             }
 
-            // Search backwards from target for strong punctuation, then commas/spaces
             var strongPunctuation = new HashSet<char> { '.', '!', '?', '…', '。', '！', '？' };
             var weakPunctuation = new HashSet<char> { ';', ':', ',', '，', '；', '：' };
 
@@ -355,26 +659,21 @@ public partial class SplitBreakLongLinesViewModel : ObservableObject, IClosingCl
                     return i;
                 }
             }
+
             for (var i = Math.Min(targetIndex, text.Length - 1); i >= 0 && i >= targetIndex - 30; i--)
             {
                 var ch = text[i];
-                if (weakPunctuation.Contains(ch))
-                {
-                    return i;
-                }
-
-                if (char.IsWhiteSpace(ch))
+                if (weakPunctuation.Contains(ch) || char.IsWhiteSpace(ch))
                 {
                     return i;
                 }
 
                 if (ch == '-' && i + 1 < text.Length && text[i + 1] == ' ')
                 {
-                    return i; // split at "- "
+                    return i;
                 }
             }
 
-            // If none found backwards, try small lookahead window
             for (var i = Math.Min(targetIndex + 1, text.Length - 1); i < text.Length && i <= targetIndex + 30; i++)
             {
                 var ch = text[i];
@@ -389,11 +688,9 @@ public partial class SplitBreakLongLinesViewModel : ObservableObject, IClosingCl
                 }
             }
 
-            // Default to target index
             return Math.Min(targetIndex, text.Length - 1);
         }
 
-        // Local helper: find split index ensuring plain (html-stripped) length <= maxPlainLen
         static int FindBestSplitIndexByPlainLength(string text, int maxPlainLen)
         {
             if (string.IsNullOrEmpty(text))
@@ -406,11 +703,11 @@ public partial class SplitBreakLongLinesViewModel : ObservableObject, IClosingCl
 
             var plainLen = 0;
             var inTag = false;
-            var lastVisibleIdx = -1; // last non-tag index
-            var bestIdx = -1;             // best candidate index under the limit (any)
-            var bestPlainLen = -1;        // plain length at bestIdx
-            var bestAcceptableIdx = -1;   // best acceptable candidate index under the limit (no orphan small words)
-            var bestAcceptablePlain = -1; // plain length at bestAcceptableIdx
+            var lastVisibleIdx = -1;
+            var bestIdx = -1;
+            var bestPlainLen = -1;
+            var bestAcceptableIdx = -1;
+            var bestAcceptablePlain = -1;
 
             for (var i = 0; i < text.Length; i++)
             {
@@ -422,22 +719,20 @@ public partial class SplitBreakLongLinesViewModel : ObservableObject, IClosingCl
 
                 if (!inTag)
                 {
-                    // newline indicates strong boundary, do not include it
                     if (ch == '\n')
                     {
-                        // Prefer splitting just before newline if within limit
                         return i > 0 ? i - 1 : 0;
                     }
 
-                    // Count visible characters (skip CR)
                     if (ch != '\r')
                     {
                         plainLen++;
                         lastVisibleIdx = i;
                     }
 
-                    // Any break candidate we see under or equal to the limit can be considered
-                    var isBreak = strongPunctuation.Contains(ch) || weakPunctuation.Contains(ch) || char.IsWhiteSpace(ch) || (ch == '-' && i + 1 < text.Length && text[i + 1] == ' ');
+                    var isBreak = strongPunctuation.Contains(ch) || weakPunctuation.Contains(ch) ||
+                                  char.IsWhiteSpace(ch) ||
+                                  (ch == '-' && i + 1 < text.Length && text[i + 1] == ' ');
                     if (isBreak && plainLen <= maxPlainLen)
                     {
                         if (plainLen >= bestPlainLen)
@@ -446,7 +741,6 @@ public partial class SplitBreakLongLinesViewModel : ObservableObject, IClosingCl
                             bestIdx = i;
                         }
 
-                        // Prefer breakpoints that do not orphan one or two small words around strong punctuation
                         var acceptable = !CausesOrphanSmallWords(text, i, strongPunctuation);
                         if (acceptable && plainLen >= bestAcceptablePlain)
                         {
@@ -457,7 +751,6 @@ public partial class SplitBreakLongLinesViewModel : ObservableObject, IClosingCl
 
                     if (plainLen > maxPlainLen)
                     {
-                        // Prefer the acceptable candidate closest to the limit
                         if (bestAcceptableIdx >= 0)
                         {
                             return bestAcceptableIdx;
@@ -478,10 +771,8 @@ public partial class SplitBreakLongLinesViewModel : ObservableObject, IClosingCl
                 }
             }
 
-            // Entire text within limit
             return text.Length - 1;
 
-            // Local: Avoid breakpoints that leave one or two small words alone around sentence-ending punctuation
             static bool CausesOrphanSmallWords(string s, int breakIdx, HashSet<char> strong)
             {
                 if (breakIdx < 0 || breakIdx >= s.Length)
@@ -491,72 +782,81 @@ public partial class SplitBreakLongLinesViewModel : ObservableObject, IClosingCl
 
                 var ch = s[breakIdx];
 
-                // Helper to get up to two word lengths backward from index-1
                 static List<int> GetPrevWordLens(string str, int idx)
                 {
                     var res = new List<int>(2);
                     var i = Math.Min(idx, str.Length - 1);
-                    // skip spaces and closing quotes/parens
                     var closingSkip = new HashSet<char>(new[] { ')', '’', '”', '\'', '»', ']', '}', '"' });
                     while (i >= 0 && (char.IsWhiteSpace(str[i]) || closingSkip.Contains(str[i])))
                     {
                         i--;
                     }
 
-                    for (int w = 0; w < 2 && i >= 0; w++)
+                    for (var w = 0; w < 2 && i >= 0; w++)
                     {
                         var length = 0;
-                        while (i >= 0 && char.IsLetterOrDigit(str[i])) { length++; i--; }
+                        while (i >= 0 && char.IsLetterOrDigit(str[i]))
+                        {
+                            length++;
+                            i--;
+                        }
+
                         if (length > 0)
                         {
                             res.Add(length);
                         }
-                        // skip separators before next word
+
                         while (i >= 0 && !char.IsLetterOrDigit(str[i]))
                         {
                             i--;
                         }
                     }
+
                     return res;
                 }
 
-                // Helper to get up to two word lengths forward from index+1
                 static List<int> GetNextWordLens(string str, int idx)
                 {
                     var res = new List<int>(2);
                     var i = Math.Min(idx + 1, str.Length - 1);
-                    // skip spaces and opening quotes/parens
                     var openingSkip = new HashSet<char>(new[] { '(', '“', '‘', '\'', '«', '[', '{', '"' });
                     while (i < str.Length && (char.IsWhiteSpace(str[i]) || openingSkip.Contains(str[i])))
                     {
                         i++;
                     }
 
-                    for (int w = 0; w < 2 && i < str.Length; w++)
+                    for (var w = 0; w < 2 && i < str.Length; w++)
                     {
                         var length = 0;
-                        while (i < str.Length && char.IsLetterOrDigit(str[i])) { length++; i++; }
+                        while (i < str.Length && char.IsLetterOrDigit(str[i]))
+                        {
+                            length++;
+                            i++;
+                        }
+
                         if (length > 0)
                         {
                             res.Add(length);
                         }
-                        // skip separators before next word
+
                         while (i < str.Length && !char.IsLetterOrDigit(str[i]))
                         {
                             i++;
                         }
                     }
+
                     return res;
                 }
 
-                // If candidate itself is a strong punctuation, avoid tiny words just before or just after it
                 if (strong.Contains(ch))
                 {
                     var prevLensStrong = GetPrevWordLens(s, breakIdx - 1);
-                    var prevTinyStrong = prevLensStrong.Count > 0 && prevLensStrong.Count <= 2 && prevLensStrong.TrueForAll(l => l <= 2);
+                    var prevTinyStrong = prevLensStrong.Count > 0 && prevLensStrong.Count <= 2 &&
+                                         prevLensStrong.TrueForAll(l => l <= 2);
 
                     var nextLensStrong = GetNextWordLens(s, breakIdx);
-                    var nextTinyStrong = nextLensStrong.Count > 0 && nextLensStrong.Count <= 2 && nextLensStrong.TrueForAll(l => l <= 2);
+                    var nextTinyStrong = nextLensStrong.Count > 0 && nextLensStrong.Count <= 2 &&
+                                         nextLensStrong.TrueForAll(l => l <= 2);
 
                     if (prevTinyStrong || nextTinyStrong)
                     {
@@ -564,9 +864,7 @@ public partial class SplitBreakLongLinesViewModel : ObservableObject, IClosingCl
                     }
                 }
 
-                // If candidate is NOT strong, check whether we are breaking shortly AFTER a strong punctuation
-                // and the words since that strong punctuation are tiny (one or two words of length <= 2), e.g. "... overtime. So,"
-                int j = breakIdx - 1;
+                var j = breakIdx - 1;
                 while (j >= 0 && !strong.Contains(s[j]))
                 {
                     j--;
@@ -574,36 +872,35 @@ public partial class SplitBreakLongLinesViewModel : ObservableObject, IClosingCl
 
                 if (j >= 0)
                 {
-                    // We found previous strong punctuation at index j
-                    // Count up to 2 word lengths between (j, breakIdx)
-                    var tinyBetween = false;
+                    var i = j + 1;
+                    var openingSkip = new HashSet<char>(new[] { '(', '“', '‘', '\'', '«', '[', '{', '"' });
+                    while (i < breakIdx && (char.IsWhiteSpace(s[i]) || openingSkip.Contains(s[i])))
                     {
-                        int i = j + 1;
-                        // skip whitespace and opening quotes/parens
-                        var openingSkip = new HashSet<char>(new[] { '(', '“', '‘', '\'', '«', '[', '{', '"' });
-                        while (i < breakIdx && (char.IsWhiteSpace(s[i]) || openingSkip.Contains(s[i])))
+                        i++;
+                    }
+
+                    var lens = new List<int>(2);
+                    for (var w = 0; w < 2 && i < breakIdx; w++)
+                    {
+                        var len = 0;
+                        while (i < breakIdx && char.IsLetterOrDigit(s[i]))
                         {
+                            len++;
                             i++;
                         }
 
-                        var lens = new List<int>(2);
-                        for (int w = 0; w < 2 && i < breakIdx; w++)
+                        if (len > 0)
                         {
-                            int len = 0;
-                            while (i < breakIdx && char.IsLetterOrDigit(s[i])) { len++; i++; }
-                            if (len > 0)
-                            {
-                                lens.Add(len);
-                            }
-
-                            while (i < breakIdx && !char.IsLetterOrDigit(s[i]))
-                            {
-                                i++;
-                            }
+                            lens.Add(len);
                         }
-                        tinyBetween = lens.Count > 0 && lens.Count <= 2 && lens.TrueForAll(l => l <= 2);
+
+                        while (i < breakIdx && !char.IsLetterOrDigit(s[i]))
+                        {
+                            i++;
+                        }
                     }
-                    if (tinyBetween)
+
+                    if (lens.Count > 0 && lens.Count <= 2 && lens.TrueForAll(l => l <= 2))
                     {
                         return true;
                     }
@@ -629,6 +926,7 @@ public partial class SplitBreakLongLinesViewModel : ObservableObject, IClosingCl
         SplitLongLines = Se.Settings.Tools.SplitRebalanceLongLinesSplit;
         RebalanceLongLines = Se.Settings.Tools.SplitRebalanceLongLinesRebalance;
         RebalanceOnlyLinesTooLong = Se.Settings.Tools.SplitRebalanceLongLinesRebalanceOnlyTooLong;
+        ApplyMinimumGapToAllSubtitles = false;
     }
 
     private void SaveSettings()
@@ -640,6 +938,30 @@ public partial class SplitBreakLongLinesViewModel : ObservableObject, IClosingCl
         Se.Settings.Tools.SplitRebalanceLongLinesMaxNumberOfLines = MaxNumberOfLines;
         Se.Settings.Tools.SplitRebalanceLongLinesUnbreakShorterThan = UnbreakLinesShorterThan;
         Se.SaveSettings();
+    }
+
+    [RelayCommand]
+    private void SelectAllRebalances()
+    {
+        foreach (var fix in Fixes)
+        {
+            if (fix.IsSelectable)
+            {
+                fix.IsSelected = true;
+            }
+        }
+    }
+
+    [RelayCommand]
+    private void DeselectAllRebalances()
+    {
+        foreach (var fix in Fixes)
+        {
+            if (fix.IsSelectable)
+            {
+                fix.IsSelected = false;
+            }
+        }
     }
 
     [RelayCommand]
