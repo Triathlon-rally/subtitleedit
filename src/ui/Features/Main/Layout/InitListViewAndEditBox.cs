@@ -13,6 +13,7 @@ using Avalonia.Media;
 using Avalonia.Styling;
 using Nikse.SubtitleEdit.Controls;
 using Nikse.SubtitleEdit.Features.Options.Settings;
+using Nikse.SubtitleEdit.Features.Main.FlowEditing;
 using Nikse.SubtitleEdit.Features.Shared.TextBoxUtils;
 using Nikse.SubtitleEdit.Logic;
 using Nikse.SubtitleEdit.Logic.Config;
@@ -1563,6 +1564,15 @@ public static partial class InitListViewAndEditBox
             }
         };
 
+        var flowEditingButton = new Button
+        {
+            Content = "Flow",
+            Margin = new Thickness(8, 0, 0, 0),
+            Padding = new Thickness(8, 2),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        panelForTextLabel.Children.Add(flowEditingButton);
+
 
         textEditGrid.Children.Add(panelForTextLabel);
 
@@ -1583,9 +1593,40 @@ public static partial class InitListViewAndEditBox
         });
         textEditGrid.Children.Add(textCharsSecLabel);
         var textEditor = MakeTextBox(vm);
+        var flowEditingView = new FlowEditingView(vm)
+        {
+            IsVisible = false,
+        };
+        var editorHost = new Grid();
+        editorHost.Children.Add(textEditor);
+        editorHost.Children.Add(flowEditingView);
+        textEditGrid.Children.Add(editorHost);
+        Grid.SetRow(editorHost, 1);
 
-        textEditGrid.Children.Add(textEditor);
-        Grid.SetRow(textEditor, 1);
+        GridLength? editRowHeightBeforeFlow = null;
+        flowEditingButton.Click += (_, _) =>
+        {
+            var activate = !flowEditingView.IsVisible;
+            flowEditingView.IsVisible = activate;
+            textEditor.IsVisible = !activate;
+            flowEditingButton.Content = activate ? "Text" : "Flow";
+
+            if (activate)
+            {
+                flowEditingView.Refresh();
+                if (!detachedEditBox && mainGrid.RowDefinitions.Count > 1)
+                {
+                    editRowHeightBeforeFlow = mainGrid.RowDefinitions[1].Height;
+                    var targetHeight = Math.Max(mainGrid.RowDefinitions[1].ActualHeight, 360);
+                    mainGrid.RowDefinitions[1].Height = new GridLength(targetHeight);
+                }
+            }
+            else if (!detachedEditBox && editRowHeightBeforeFlow.HasValue && mainGrid.RowDefinitions.Count > 1)
+            {
+                mainGrid.RowDefinitions[1].Height = editRowHeightBeforeFlow.Value;
+                editRowHeightBeforeFlow = null;
+            }
+        };
 
         var textTotalLengthLabel = new TextBlock
         {
