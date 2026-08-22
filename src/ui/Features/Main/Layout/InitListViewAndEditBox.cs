@@ -1609,7 +1609,7 @@ public static partial class InitListViewAndEditBox
             var activate = !flowEditingView.IsVisible;
             flowEditingView.IsVisible = activate;
             textEditor.IsVisible = !activate;
-            flowEditingButton.Content = activate ? "Text" : "Flow";
+            flowEditingButton.Content = activate ? "✓ Flow" : "Flow";
 
             if (activate)
             {
