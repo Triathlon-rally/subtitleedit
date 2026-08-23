@@ -133,6 +133,10 @@ public class LanguageSettings
     public string WaveformMouseWheelStepMilliseconds { get; set; }
     public string WaveformSnapToShotChanges { get; set; }
     public string WaveformSnapToFrames { get; set; }
+    public string WaveformSnapToShotChangesPixels { get; set; }
+    public string WaveformSnapToShotChangeStartMaxSeconds { get; set; }
+    public string WaveformSnapToShotChangeEndMaxSeconds { get; set; }
+    public string WaveformSnapToShotChangeSameShotEndMaxSeconds { get; set; }
     public string WaveformShotChangesAutoGenerate { get; set; }
     public string WaveformTextFontSize { get; set; }
     public string WaveformTextFontBold { get; set; }
@@ -309,6 +313,7 @@ public class LanguageSettings
     public string UseFocusedButtonBackgroundColor { get; set; }
     public string FocusedButtonBackgroundColor { get; set; }
     public string ForceCrLfOnSave { get; set; }
+    public string ShowFormatLimitWarning { get; set; }
     public string TextBoxButtonShowAutoBreak { get; set; }
     public string TextBoxButtonShowUnbreak { get; set; }
     public string TextBoxButtonShowItalic { get; set; }
@@ -464,6 +469,10 @@ public class LanguageSettings
         WaveformMouseWheelStepMilliseconds = "{0} ms";
         WaveformSnapToShotChanges = "Snap to shot changes (hold Shift to override)";
         WaveformSnapToFrames = "Snap to frames";
+        WaveformSnapToShotChangesPixels = "Snap distance when dragging (pixels)";
+        WaveformSnapToShotChangeStartMaxSeconds = "Snap to nearest shot change: max start distance (seconds)";
+        WaveformSnapToShotChangeEndMaxSeconds = "Snap to nearest shot change: max end distance (seconds)";
+        WaveformSnapToShotChangeSameShotEndMaxSeconds = "Snap to nearest shot change: max end distance when start and end share a cut (seconds)";
         WaveformShotChangesAutoGenerate = "Shot changes auto-generate";
         WaveformTextFontSize = "Waveform text font size";
         WaveformTextFontBold = "Waveform text font bold";
@@ -638,6 +647,7 @@ public class LanguageSettings
         UseFocusedButtonBackgroundColor = "Use focused button background color";
         FocusedButtonBackgroundColor = "Focused button background color";
         ForceCrLfOnSave = "Force CR+LF on save (text subtitle files)";
+        ShowFormatLimitWarning = "Warn on save when lines exceed the format's limits (e.g. SCC 32 chars/line)";
         TextBoxButtonShowAutoBreak = "Text box: show auto-break button";
         TextBoxButtonShowUnbreak = "Text box: show unbreak button";
         TextBoxButtonShowItalic = "Text box: show italic button";

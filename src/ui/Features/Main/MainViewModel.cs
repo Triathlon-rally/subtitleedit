@@ -85,6 +85,7 @@ using Nikse.SubtitleEdit.Features.Shared.ColorPicker;
 using Nikse.SubtitleEdit.Features.Shared.ColumnPaste;
 using Nikse.SubtitleEdit.Features.Shared.ErrorList;
 using Nikse.SubtitleEdit.Features.Shared.GetAudioClips;
+using Nikse.SubtitleEdit.Features.Shared.FormatLimitWarning;
 using Nikse.SubtitleEdit.Features.Shared.GoToLineNumber;
 using Nikse.SubtitleEdit.Features.Shared.MediaInfoView;
 using Nikse.SubtitleEdit.Features.Shared.PickAlignment;
@@ -2816,6 +2817,20 @@ public partial class MainViewModel :
 
         var original = _subtitleOriginal;
         _reapplyingReadOnlyReference = true;
+
+        // The rebuild below rewrites the row collection one row at a time - display-only rows are
+        // removed, re-inserted and glided back into order. Every one of those raises a collection
+        // change, the virtualizing panel re-estimates its extent, and TableViewScrollAnchor reads
+        // that as "the panel moved under the view" and restores the anchor: PrePositionScroll, a
+        // ScrollIntoView and up to three synchronous UpdateLayout passes, each time. A merge that
+        // brings a handful of reference rows back therefore paid for that handful of full restores
+        // in a row, which is the slow scroll up and back down after merging (issues #13962,
+        // #14003). Suspending the anchor for the whole rebuild leaves it following the view - it
+        // just stops moving it - so the burst costs one settle at the end instead of N.
+        using var anchorSuspended = SubtitleGrid is { } grid
+            ? TableViewScrollAnchor.GetFor(grid)?.Suspend()
+            : null;
+
         try
         {
             // Which original line each id belongs to. Ids are unique per file; claimed lines are
@@ -7204,7 +7219,7 @@ public partial class MainViewModel :
                 continue;
             }
 
-            var text = Subtitles[i].Text;
+            var text = StrippedLine.RemoveAllBlocks(Subtitles[i].Text);
             if (!string.IsNullOrWhiteSpace(text))
             {
                 context.AppendLine(text.Replace(Environment.NewLine, " ").Replace("\n", " "));
@@ -7214,9 +7229,12 @@ public partial class MainViewModel :
         var languageName = TwoLetterCodeToLanguageName(
             LanguageAutoDetect.AutoDetectGoogleLanguageOrNull(GetUpdateSubtitle()));
 
+        // ASSA override blocks around the line stay on our side (#13927): the model only gets
+        // the text, and the blocks are glued back on around whatever it returns.
+        var stripped = StrippedLine.Strip(current.Text);
         var result = await ShowDialogAsync<AiAssistant.AiAssistantWindow, AiAssistant.AiAssistantViewModel>(vm =>
             vm.Initialize(
-                current.Text,
+                stripped.Text,
                 context.ToString().TrimEnd(),
                 languageName,
                 Se.Settings.General.SubtitleMaximumCharactersPerSeconds,
@@ -7224,7 +7242,7 @@ public partial class MainViewModel :
 
         if (result.ApplyPressed && !string.IsNullOrEmpty(result.ResultToApply))
         {
-            current.Text = result.ResultToApply;
+            current.Text = stripped.Restore(result.ResultToApply);
             SelectAndScrollToRow(index);
         }
     }
@@ -7343,11 +7361,12 @@ public partial class MainViewModel :
         }
 
         var result = await ShowDialogAsync<SplitBreakLongLinesWindow, SplitBreakLongLinesViewModel>(
-            vm => { vm.Initialize(Subtitles.ToList()); });
+            vm => { vm.Initialize(Subtitles.ToList(), IsFormatEbu); });
 
         if (result.OkPressed && result.AllSubtitlesFixed.Count > 0)
         {
             ReplaceSubtitles(result.AllSubtitlesFixed);
+            Renumber();
             SelectAndScrollToRow(0);
             _updateAudioVisualizer = true;
             RefreshSubtitlePreview();
@@ -9901,76 +9920,33 @@ public partial class MainViewModel :
             return;
         }
 
-        var maxStartDistance = Se.Settings.Waveform.SnapToShotChangeStartMaxSeconds;
-        var maxEndDistance = Se.Settings.Waveform.SnapToShotChangeEndMaxSeconds;
-        var maxSameShotEndDistance = Se.Settings.Waveform.SnapToShotChangeSameShotEndMaxSeconds;
+        var inCuesGapMs = TimeCodesBeautifierUtils.GetInCuesGapMs();
+        var outCuesGapMs = TimeCodesBeautifierUtils.GetOutCuesGapMs();
+        var maxStartDistanceMs = Se.Settings.Waveform.SnapToShotChangeStartMaxSeconds * 1000.0;
+        var maxEndDistanceMs = Se.Settings.Waveform.SnapToShotChangeEndMaxSeconds * 1000.0;
+        var maxSameShotEndDistanceMs = Se.Settings.Waveform.SnapToShotChangeSameShotEndMaxSeconds * 1000.0;
 
         foreach (var line in selectedLines)
         {
-            var idx = Subtitles.IndexOf(line);
-            var prev = GetPreviousWorkingRow(idx);
-            var next = GetNextWorkingRow(idx);
+            var snapped = ShotChangesHelper.GetSnappedToNearestMs(
+                AudioVisualizer.ShotChanges,
+                line.StartTime.TotalMilliseconds,
+                line.EndTime.TotalMilliseconds,
+                inCuesGapMs,
+                outCuesGapMs,
+                maxStartDistanceMs,
+                maxEndDistanceMs,
+                maxSameShotEndDistanceMs);
 
-            var nearestStartShotChange = AudioVisualizer.ShotChanges
-                .OrderBy(s => Math.Abs(s - line.StartTime.TotalSeconds))
-                .FirstOrDefault(s => Math.Abs(s - line.StartTime.TotalSeconds) < maxStartDistance);
-
-            var nearestEndShotChange = AudioVisualizer.ShotChanges
-                .OrderBy(s => Math.Abs(s - line.EndTime.TotalSeconds))
-                .FirstOrDefault(s => Math.Abs(s - line.EndTime.TotalSeconds) < maxEndDistance);
-
-            if (nearestStartShotChange == 0 && nearestEndShotChange == 0)
+            if (snapped == null)
             {
                 continue;
             }
 
-            if (nearestStartShotChange == 0)
-            {
-                var newDuration = TimeSpan.FromSeconds(nearestEndShotChange) - line.StartTime;
-                if (newDuration.TotalMilliseconds <= Se.Settings.General.SubtitleMaximumDisplayMilliseconds &&
-                    newDuration.TotalMilliseconds >= Se.Settings.General.SubtitleMinimumDisplayMilliseconds)
-                {
-                    line.EndTime = TimeSpan.FromSeconds(nearestEndShotChange);
-                }
-
-                continue;
-            }
-
-            if (nearestEndShotChange == 0)
-            {
-                var newDuration = line.EndTime - TimeSpan.FromSeconds(nearestStartShotChange);
-                if (newDuration.TotalMilliseconds <= Se.Settings.General.SubtitleMaximumDisplayMilliseconds &&
-                    newDuration.TotalMilliseconds >= Se.Settings.General.SubtitleMinimumDisplayMilliseconds)
-                {
-                    line.StartTime = TimeSpan.FromSeconds(nearestStartShotChange);
-                }
-
-                continue;
-            }
-
-            if (nearestStartShotChange == nearestEndShotChange)
-            {
-                nearestEndShotChange = AudioVisualizer.ShotChanges
-                    .OrderBy(s => Math.Abs(s - line.EndTime.TotalSeconds))
-                    .FirstOrDefault(s => Math.Abs(s - line.EndTime.TotalSeconds) < maxSameShotEndDistance);
-
-                if (nearestEndShotChange > 0 && nearestEndShotChange > line.StartTime.TotalSeconds)
-                {
-                    line.EndTime = TimeSpan.FromSeconds(nearestEndShotChange);
-                }
-
-                continue;
-            }
-
-            var newStartTime = TimeSpan.FromSeconds(nearestStartShotChange);
-            var newEndTime = TimeSpan.FromSeconds(nearestEndShotChange);
-            var newCombinedDuration = newEndTime - newStartTime;
-            if (newCombinedDuration.TotalMilliseconds <= Se.Settings.General.SubtitleMaximumDisplayMilliseconds &&
-                newCombinedDuration.TotalMilliseconds >= Se.Settings.General.SubtitleMinimumDisplayMilliseconds)
-            {
-                line.StartTime = newStartTime;
-                line.EndTime = newEndTime;
-            }
+            // Atomic so the bound editor controls never see a transient start > end.
+            line.SetTimes(
+                TimeSpan.FromMilliseconds(snapped.Value.StartMs),
+                TimeSpan.FromMilliseconds(snapped.Value.EndMs));
         }
 
         _updateAudioVisualizer = true;
@@ -10556,7 +10532,7 @@ public partial class MainViewModel :
         {
             var selectedItems = SubtitleGridSelectedItems.Cast<SubtitleLineViewModel>().ToList();
             var paragraphs = Subtitles.Select(p => new SubtitleLineViewModel(p)).ToList();
-            vm.Initialize(paragraphs, selectedItems, _videoFileName ?? string.Empty, _subtitleFileName ?? string.Empty, MakeVideoPreviewSubtitleContext(), AudioVisualizer);
+            vm.Initialize(paragraphs, selectedItems, _videoFileName ?? string.Empty, _subtitleFileName ?? string.Empty, MakeVideoPreviewSubtitleContext(), AudioVisualizer, _audioTrack?.Id ?? -1);
         });
 
         if (result.OkPressed)
@@ -10590,7 +10566,7 @@ public partial class MainViewModel :
         var result = await ShowDialogAsync<PointSyncViaOtherWindow, PointSyncViaOtherViewModel>(vm =>
         {
             var paragraphs = Subtitles.Select(p => new SubtitleLineViewModel(p)).ToList();
-            vm.Initialize(paragraphs, _videoFileName ?? string.Empty, _subtitleFileName ?? string.Empty, MakeVideoPreviewSubtitleContext());
+            vm.Initialize(paragraphs, _videoFileName ?? string.Empty, _subtitleFileName ?? string.Empty, MakeVideoPreviewSubtitleContext(), _audioTrack?.Id ?? -1);
         });
 
         if (result.OkPressed)
@@ -12001,11 +11977,11 @@ public partial class MainViewModel :
             var next = i < Subtitles.Count - 1 ? Subtitles[i + 1] : null;
             if (s.HasErrors(prev, next))
             {
-                list.Add(new ErrorListItem(s, prev, next));
+                list.AddRange(ErrorListItem.Make(s, prev, next));
             }
         }
 
-        var result = await ShowDialogAsync<ErrorListWindow, ErrorListViewModel>(vm => { vm.Initialize(list); });
+        var result = await ShowDialogAsync<ErrorListWindow, ErrorListViewModel>(vm => { vm.Initialize(list, Subtitles.Count); });
 
         if (result.GoToPressed && result.SelectedSubtitle != null)
         {
@@ -12690,6 +12666,28 @@ public partial class MainViewModel :
             }
         }
 
+        // Moving the start back must not run into the previous line (issue #13999). SE 4 clamped
+        // to "previous end + minimum gap" here; SE 5 checked only this line's own end, so repeated
+        // presses walked straight through the neighbour. The KeepGapPrev variant is exempt: it
+        // carries the previous line along, so there is nothing to run into. "Allow overlap (when
+        // moving/resizing)" is the user saying they want to - the waveform drag reads it the same
+        // way.
+        if (deltaMs < 0 && !prevIsClose && prev != null && !Se.Settings.Waveform.AllowOverlap)
+        {
+            var floorMs = prev.EndTime.TotalMilliseconds + gapMs;
+            if (newStartMs < floorMs)
+            {
+                // Already overlapping before this press (a nudge cannot be asked to repair that):
+                // leave it alone rather than jumping the cue forward to the gap.
+                if (s.StartTime.TotalMilliseconds <= floorMs)
+                {
+                    return;
+                }
+
+                newStartMs = floorMs;
+            }
+        }
+
         s.SetStartTimeOnly(TimeSpan.FromMilliseconds(newStartMs));
 
         if (prevIsClose && prev != null)
@@ -12739,6 +12737,22 @@ public partial class MainViewModel :
                 && (next.EndTime.TotalMilliseconds - next.StartTime.TotalMilliseconds) - deltaMs < minDurMs)
             {
                 return;
+            }
+        }
+
+        // Symmetric counterpart of the clamp in MoveStartByFrames (issue #13999): moving the end
+        // forward must not run into the next line.
+        if (deltaMs > 0 && !nextIsClose && next != null && !Se.Settings.Waveform.AllowOverlap)
+        {
+            var ceilingMs = next.StartTime.TotalMilliseconds - gapMs;
+            if (newEndMs > ceilingMs)
+            {
+                if (s.EndTime.TotalMilliseconds >= ceilingMs)
+                {
+                    return;
+                }
+
+                newEndMs = ceilingMs;
             }
         }
 
@@ -15646,7 +15660,7 @@ public partial class MainViewModel :
         }
 
         var result = await ShowDialogAsync<SplitBreakLongLinesWindow, SplitBreakLongLinesViewModel>(
-            vm => { vm.Initialize(selectedInOrder); });
+            vm => { vm.Initialize(selectedInOrder, IsFormatEbu); });
 
         if (!result.OkPressed || result.AllSubtitlesFixed.Count == 0)
         {
@@ -21080,7 +21094,17 @@ public partial class MainViewModel :
             return await SaveBinarySubtitle(binaryFormat, isAutoSave);
         }
 
-        var text = GetUpdateSubtitle(true).ToText(SelectedSubtitleFormat);
+        var subtitleToSave = GetUpdateSubtitle(true);
+
+        // Formats with hard limits (SCC: 32 chars x 4 lines) silently re-wrap/truncate anything
+        // that does not fit, so the saved file stops matching the grid. Warn first - but never
+        // from the auto-save timer, which must not pop modal dialogs.
+        if (!isAutoSave && !await ConfirmFormatLimitsBeforeSave(subtitleToSave, SelectedSubtitleFormat))
+        {
+            return false;
+        }
+
+        var text = subtitleToSave.ToText(SelectedSubtitleFormat);
 
         if (Se.Settings.General.ForceCrLfOnSave)
         {
@@ -21309,6 +21333,33 @@ public partial class MainViewModel :
         }
 
         return _subtitleOriginal;
+    }
+
+    /// <summary>
+    /// Returns false if the user cancelled the save because some subtitles exceed the format's limits.
+    /// </summary>
+    private async Task<bool> ConfirmFormatLimitsBeforeSave(Subtitle subtitle, SubtitleFormat format)
+    {
+        if (!Se.Settings.General.ShowFormatLimitWarning || Window == null)
+        {
+            return true;
+        }
+
+        var limits = format.FormatLimits;
+        if (limits == null)
+        {
+            return true;
+        }
+
+        var violating = limits.GetViolatingParagraphNumbers(subtitle);
+        if (violating.Count == 0)
+        {
+            return true;
+        }
+
+        var vm = await ShowDialogAsync<FormatLimitWarningWindow, FormatLimitWarningViewModel>(
+            vm => vm.Initialize(format, limits, violating));
+        return vm.SaveAnywayPressed;
     }
 
     private async Task<bool> SaveSubtitleAs()

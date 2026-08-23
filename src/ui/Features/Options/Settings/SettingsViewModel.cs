@@ -1,4 +1,4 @@
-using Avalonia;
+﻿using Avalonia;
 using Avalonia.Animation;
 using Avalonia.Animation.Easings;
 using Avalonia.Controls;
@@ -156,6 +156,7 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private TextEncoding _defaultEncoding;
     [ObservableProperty] private bool _autoConvertToUtf8;
     [ObservableProperty] private bool _forceCrLfOnSave;
+    [ObservableProperty] private bool _showFormatLimitWarning;
     [ObservableProperty] private bool _autoTrimWhiteSpace;
     [ObservableProperty] private bool _removeBlankLinesWhenOpening;
 
@@ -315,6 +316,10 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private bool _waveformMouseWheelSetsVideoPosition;
     [ObservableProperty] private bool _waveformSnapToShotChanges;
     [ObservableProperty] private bool _waveformSnapToFrames;
+    [ObservableProperty] private int _waveformSnapToShotChangesPixels;
+    [ObservableProperty] private decimal _waveformSnapToShotChangeStartMaxSeconds;
+    [ObservableProperty] private decimal _waveformSnapToShotChangeEndMaxSeconds;
+    [ObservableProperty] private decimal _waveformSnapToShotChangeSameShotEndMaxSeconds;
     [ObservableProperty] private bool _waveformShotChangesAutoGenerate;
     [ObservableProperty] private bool _waveformAllowOverlap;
     [ObservableProperty] private bool _waveformSetVideoPositionOnMoveStartEnd;
@@ -776,6 +781,7 @@ public partial class SettingsViewModel : ObservableObject
         DefaultSaveLocationCustomFolder = Se.Settings.General.DefaultSaveLocationCustomFolder ?? string.Empty;
         AutoConvertToUtf8 = general.AutoConvertToUtf8;
         ForceCrLfOnSave = general.ForceCrLfOnSave;
+        ShowFormatLimitWarning = general.ShowFormatLimitWarning;
         AutoTrimWhiteSpace = general.AutoTrimWhiteSpace;
         RemoveBlankLinesWhenOpening = general.RemoveBlankLinesWhenOpening;
 
@@ -994,6 +1000,10 @@ public partial class SettingsViewModel : ObservableObject
             : FormatMouseWheelStep(500);
         WaveformSnapToShotChanges = Se.Settings.Waveform.SnapToShotChanges;
         WaveformSnapToFrames = Se.Settings.Waveform.SnapToFrames;
+        WaveformSnapToShotChangesPixels = Se.Settings.Waveform.SnapToShotChangesPixels;
+        WaveformSnapToShotChangeStartMaxSeconds = (decimal)Se.Settings.Waveform.SnapToShotChangeStartMaxSeconds;
+        WaveformSnapToShotChangeEndMaxSeconds = (decimal)Se.Settings.Waveform.SnapToShotChangeEndMaxSeconds;
+        WaveformSnapToShotChangeSameShotEndMaxSeconds = (decimal)Se.Settings.Waveform.SnapToShotChangeSameShotEndMaxSeconds;
         WaveformShotChangesAutoGenerate = Se.Settings.Waveform.ShotChangesAutoGenerate;
         WaveformAllowOverlap = Se.Settings.Waveform.AllowOverlap;
         WaveformSetVideoPositionOnMoveStartEnd = Se.Settings.Waveform.SetVideoPositionOnMoveStartEnd;
@@ -1646,6 +1656,7 @@ public partial class SettingsViewModel : ObservableObject
         general.DefaultSaveLocationCustomFolder = DefaultSaveLocationCustomFolder;
         general.AutoConvertToUtf8 = AutoConvertToUtf8;
         general.ForceCrLfOnSave = ForceCrLfOnSave;
+        general.ShowFormatLimitWarning = ShowFormatLimitWarning;
         general.AutoTrimWhiteSpace = AutoTrimWhiteSpace;
         general.RemoveBlankLinesWhenOpening = RemoveBlankLinesWhenOpening;
 
@@ -1828,6 +1839,10 @@ public partial class SettingsViewModel : ObservableObject
         Se.Settings.Waveform.MouseWheelVideoPositionStepMs = ParseMouseWheelStep(SelectedWaveformMouseWheelVideoPositionStep);
         Se.Settings.Waveform.SnapToShotChanges = WaveformSnapToShotChanges;
         Se.Settings.Waveform.SnapToFrames = WaveformSnapToFrames;
+        Se.Settings.Waveform.SnapToShotChangesPixels = WaveformSnapToShotChangesPixels;
+        Se.Settings.Waveform.SnapToShotChangeStartMaxSeconds = (double)WaveformSnapToShotChangeStartMaxSeconds;
+        Se.Settings.Waveform.SnapToShotChangeEndMaxSeconds = (double)WaveformSnapToShotChangeEndMaxSeconds;
+        Se.Settings.Waveform.SnapToShotChangeSameShotEndMaxSeconds = (double)WaveformSnapToShotChangeSameShotEndMaxSeconds;
         Se.Settings.Waveform.ShotChangesAutoGenerate = WaveformShotChangesAutoGenerate;
         Se.Settings.Waveform.AllowOverlap = WaveformAllowOverlap;
         Se.Settings.Waveform.SetVideoPositionOnMoveStartEnd = WaveformSetVideoPositionOnMoveStartEnd;
