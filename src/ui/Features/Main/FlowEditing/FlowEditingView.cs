@@ -282,11 +282,141 @@ public sealed class FlowEditingView : Border
             Background = GetRowBackground(isCurrent),
         };
 
+        rowBorder.ContextMenu =
+            CreateFlowContextMenu(
+                item,
+                textBox,
+                includeTextEditingItems: false);
+
+        textBox.ContextMenu =
+            CreateFlowContextMenu(
+                item,
+                textBox,
+                includeTextEditingItems: true);
+
         _textBoxes[item] = textBox;
         _rowBorders[item] = rowBorder;
         _numberBlocks[item] = number;
 
         return rowBorder;
+    }
+
+    private ContextMenu CreateFlowContextMenu(
+        FlowEditingItem item,
+        TextBox textBox,
+        bool includeTextEditingItems)
+    {
+        var items =
+            new List<object>();
+
+        if (includeTextEditingItems)
+        {
+            var cutMenuItem =
+                new MenuItem
+                {
+                    Header = "Cut",
+                };
+
+            cutMenuItem.Click +=
+                (_, _) =>
+                    textBox.Cut();
+
+            var copyMenuItem =
+                new MenuItem
+                {
+                    Header = "Copy",
+                };
+
+            copyMenuItem.Click +=
+                (_, _) =>
+                    textBox.Copy();
+
+            var pasteMenuItem =
+                new MenuItem
+                {
+                    Header = "Paste",
+                };
+
+            pasteMenuItem.Click +=
+                async (_, _) =>
+                {
+                    SelectItem(item);
+
+                    // At the end of the subtitle, Paste means Flow paste.
+                    // Inside the subtitle, keep normal TextBox paste.
+                    if (textBox.SelectionStart ==
+                            textBox.SelectionEnd &&
+                        textBox.CaretIndex >=
+                            (textBox.Text ??
+                             string.Empty).Length)
+                    {
+                        await PasteAfterSubtitleAsync(
+                            item);
+                    }
+                    else
+                    {
+                        textBox.Paste();
+                    }
+                };
+
+            items.Add(
+                cutMenuItem);
+
+            items.Add(
+                copyMenuItem);
+
+            items.Add(
+                pasteMenuItem);
+
+            items.Add(
+                new Separator());
+        }
+
+        var insertAfterMenuItem =
+            new MenuItem
+            {
+                Header = "Insert subtitle after",
+            };
+
+        insertAfterMenuItem.Click +=
+            (_, _) =>
+            {
+                SelectItem(item);
+
+                if (!CreateSubtitleAfter(item))
+                {
+                    ShowPasteWarning(
+                        item,
+                        "Not enough time to insert a subtitle here.");
+                }
+            };
+
+        var pasteAfterMenuItem =
+            new MenuItem
+            {
+                Header = "Paste after subtitle",
+            };
+
+        pasteAfterMenuItem.Click +=
+            async (_, _) =>
+            {
+                SelectItem(item);
+
+                await PasteAfterSubtitleAsync(
+                    item);
+            };
+
+        items.Add(
+            insertAfterMenuItem);
+
+        items.Add(
+            pasteAfterMenuItem);
+
+        return new ContextMenu
+        {
+            ItemsSource =
+                items,
+        };
     }
 
     private static IBrush GetRowBackground(bool isCurrent)
@@ -316,18 +446,33 @@ public sealed class FlowEditingView : Border
             return;
         }
 
-        // First safe Flow-paste version: only intercept paste at the very end
-        // of the final subtitle. Everywhere else the normal TextBox paste is
-        // left untouched until the insertion-window logic is added.
-        var subtitles = _vm.Subtitles;
-        var sourceIndex = subtitles.IndexOf(item.Source);
-
-        if (sourceIndex < 0 ||
-            sourceIndex != subtitles.Count - 1 ||
-            textBox.SelectionStart != textBox.SelectionEnd ||
+        // Flow owns Cmd/Ctrl+V only at the end of a subtitle. Inside the text,
+        // keep the TextBox's normal paste behaviour.
+        if (textBox.SelectionStart != textBox.SelectionEnd ||
             textBox.CaretIndex < (textBox.Text ?? string.Empty).Length)
         {
             return;
+        }
+
+        e.Handled = true;
+
+        await PasteAfterSubtitleAsync(
+            item);
+    }
+
+    private async System.Threading.Tasks.Task<bool> PasteAfterSubtitleAsync(
+        FlowEditingItem item)
+    {
+        var subtitles =
+            _vm.Subtitles;
+
+        var sourceIndex =
+            subtitles.IndexOf(
+                item.Source);
+
+        if (sourceIndex < 0)
+        {
+            return false;
         }
 
         var clipboard =
@@ -335,29 +480,32 @@ public sealed class FlowEditingView : Border
 
         if (clipboard == null)
         {
-            return;
+            return false;
         }
 
         var clipboardText =
             await clipboard.TryGetTextAsync();
 
-        if (string.IsNullOrWhiteSpace(clipboardText))
+        if (string.IsNullOrWhiteSpace(
+                clipboardText))
         {
-            return;
+            ShowPasteWarning(
+                item,
+                "Clipboard contains no text.");
+
+            return false;
         }
 
-        // We own this paste now; raw text must not also be inserted by TextBox.
-        e.Handled = true;
-
         var parsedSource =
-            FlowTextParser.Parse(item.Source.Text);
+            FlowTextParser.Parse(
+                item.Source.Text);
 
         // Plain text pasted into EBU STL always receives an explicit yellow
-        // Teletext colour code. Therefore the paste planner must use the
-        // stricter 36-character line limit from the start.
+        // Teletext colour code. Therefore EBU planning uses 36 characters.
         var hasColor =
             _vm.IsFormatEbu ||
-            !string.IsNullOrWhiteSpace(parsedSource.ColorToken);
+            !string.IsNullOrWhiteSpace(
+                parsedSource.ColorToken);
 
         var gapMs =
             Math.Max(
@@ -367,13 +515,29 @@ public sealed class FlowEditingView : Border
 
         var insertionStart =
             item.Source.EndTime +
-            TimeSpan.FromMilliseconds(gapMs);
+            TimeSpan.FromMilliseconds(
+                gapMs);
+
+        TimeSpan? nextExistingSubtitleStart =
+            null;
+
+        if (sourceIndex + 1 < subtitles.Count)
+        {
+            var nextSubtitle =
+                subtitles[sourceIndex + 1];
+
+            if (!nextSubtitle.IsReferenceOnly)
+            {
+                nextExistingSubtitleStart =
+                    nextSubtitle.StartTime;
+            }
+        }
 
         var plan =
             _pasteManager.BuildPlan(
                 clipboardText,
                 insertionStart,
-                nextExistingSubtitleStart: null,
+                nextExistingSubtitleStart,
                 hasColor);
 
         if (!plan.Success)
@@ -383,17 +547,19 @@ public sealed class FlowEditingView : Border
                 plan.ErrorMessage ??
                 "Paste not possible.");
 
-            return;
+            return false;
         }
 
         if (plan.Items.Count == 0)
         {
-            return;
+            return false;
         }
 
         InsertPastePlanAfter(
             item,
             plan);
+
+        return true;
     }
 
     private void InsertPastePlanAfter(
@@ -428,12 +594,14 @@ public sealed class FlowEditingView : Border
             if (_vm.IsFormatEbu)
             {
                 // Plain text pasted into EBU STL gets an explicit yellow colour
-                // code so the operator can immediately see that a real
-                // Teletext colour code is present. Do not inherit the previous
-                // speaker colour. Horizontal alignment is preserved.
+                // code. Horizontal alignment and TT position are inherited
+                // explicitly from the anchor subtitle.
                 var parsedSource =
                     FlowTextParser.Parse(
                         currentItem.Source.Text);
+
+                newSubtitle.MarginV =
+                    currentItem.Source.MarginV;
 
                 var visibleText =
                     pasteItem.Text;
@@ -452,6 +620,10 @@ public sealed class FlowEditingView : Border
                 newSubtitle.Text =
                     taggedText;
 
+                var sourceLineCount =
+                    GetPlainLineCount(
+                        currentItem.Source.Text);
+
                 var targetLineCount =
                     GetPlainLineCount(
                         newSubtitle.Text);
@@ -459,7 +631,7 @@ public sealed class FlowEditingView : Border
                 var newRow =
                     TeletextRowHelper.GetRowKeepingBottomEdge(
                         currentItem.Source.MarginV,
-                        GetPlainLineCount(currentItem.Source.Text),
+                        sourceLineCount,
                         targetLineCount,
                         Configuration.Settings.SubtitleSettings
                             .EbuStlTeletextUseDoubleHeight);
@@ -668,6 +840,30 @@ public sealed class FlowEditingView : Border
             {
                 Text = string.Empty,
             };
+
+        if (_vm.IsFormatEbu)
+        {
+            var parsedSource =
+                FlowTextParser.Parse(
+                    source.Text);
+
+            newSubtitle.MarginV =
+                source.MarginV;
+
+            var taggedEmptyText =
+                "<font color=\"yellow\"></font>";
+
+            if (!string.IsNullOrWhiteSpace(
+                    parsedSource.AlignmentToken))
+            {
+                taggedEmptyText =
+                    parsedSource.AlignmentToken +
+                    taggedEmptyText;
+            }
+
+            newSubtitle.Text =
+                taggedEmptyText;
+        }
 
         var defaultDurationMs =
             Math.Max(
