@@ -42,6 +42,12 @@ public sealed class FlowEditingView : Border
     private SubtitleLineViewModel? _pendingFocusSource;
     private bool _pendingFocusAtStart;
 
+    // Batch tools can raise many collection changes in a very short time.
+    // Coalesce those notifications into one Flow rebuild instead of rebuilding
+    // the complete view once for every changed subtitle.
+    private bool _refreshQueued;
+    private int _refreshGeneration;
+
     public FlowEditingView(MainViewModel vm)
     {
         _vm = vm;
@@ -85,6 +91,10 @@ public sealed class FlowEditingView : Border
 
     public void Refresh()
     {
+        // A direct refresh supersedes any deferred refresh already queued.
+        _refreshQueued = false;
+        _refreshGeneration++;
+
         DisposeItems();
 
         _itemsPanel.Children.Clear();
@@ -2529,13 +2539,48 @@ public sealed class FlowEditingView : Border
                     targetOffset);
         });
     }
+    private void QueueRefresh()
+    {
+        if (!IsVisible)
+        {
+            return;
+        }
+
+        if (_refreshQueued)
+        {
+            return;
+        }
+
+        _refreshQueued = true;
+        var generation = ++_refreshGeneration;
+
+        Dispatcher.UIThread.Post(
+            () =>
+            {
+                if (generation != _refreshGeneration)
+                {
+                    return;
+                }
+
+                _refreshQueued = false;
+
+                if (!IsVisible)
+                {
+                    return;
+                }
+
+                Refresh();
+            },
+            DispatcherPriority.Background);
+    }
+
     private void SubtitlesOnCollectionChanged(
         object? sender,
         NotifyCollectionChangedEventArgs e)
     {
         if (IsVisible)
         {
-            Refresh();
+            QueueRefresh();
         }
     }
 
