@@ -11,6 +11,7 @@ using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Styling;
+using Avalonia.Threading;
 using Nikse.SubtitleEdit.Controls;
 using Nikse.SubtitleEdit.Features.Options.Settings;
 using Nikse.SubtitleEdit.Features.Main.FlowEditing;
@@ -1564,23 +1565,23 @@ public static partial class InitListViewAndEditBox
             }
         };
 
-       var flowEditingButton = new Button
-{
-    Content = "Flow",
-    Margin = new Thickness(8, 0, 0, 0),
-    Padding = new Thickness(8, 2),
-    VerticalAlignment = VerticalAlignment.Center,
-};
+        var flowEditingButton = new Button
+        {
+            Content = "Flow",
+            Margin = new Thickness(8, 0, 0, 0),
+            Padding = new Thickness(8, 2),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
 
-flowEditingButton.Bind(
-    Visual.IsVisibleProperty,
-    new Binding(nameof(vm.IsFormatEbu))
-    {
-        Source = vm,
-        Mode = BindingMode.OneWay,
-    });
+        flowEditingButton.Bind(
+            Visual.IsVisibleProperty,
+            new Binding(nameof(vm.IsFormatEbu))
+            {
+                Source = vm,
+                Mode = BindingMode.OneWay,
+            });
+
         panelForTextLabel.Children.Add(flowEditingButton);
-
 
         textEditGrid.Children.Add(panelForTextLabel);
 
@@ -1600,79 +1601,164 @@ flowEditingButton.Bind(
             Mode = BindingMode.OneWay
         });
         textEditGrid.Children.Add(textCharsSecLabel);
-  var textEditor = MakeTextBox(vm);
-var flowEditingView = new FlowEditingView(vm)
-{
-    IsVisible = false,
-};
 
-var editorHost = new Grid();
-editorHost.Children.Add(textEditor);
-editorHost.Children.Add(flowEditingView);
-textEditGrid.Children.Add(editorHost);
-Grid.SetRow(editorHost, 1);
-
-GridLength? editRowHeightBeforeFlow = null;
-
-vm.PropertyChanged += (_, e) =>
-{
-    if (e.PropertyName == nameof(MainViewModel.IsFormatEbu) &&
-        !vm.IsFormatEbu &&
-        flowEditingView.IsVisible)
-    {
-        flowEditingView.IsVisible = false;
-        textEditor.IsVisible = true;
-        flowEditingButton.Content = "Flow";
-
-        if (!detachedEditBox &&
-            editRowHeightBeforeFlow.HasValue &&
-            mainGrid.RowDefinitions.Count > 1)
+        var textEditor = MakeTextBox(vm);
+        var flowEditingView = new FlowEditingView(vm)
         {
-            mainGrid.RowDefinitions[1].Height =
-                editRowHeightBeforeFlow.Value;
+            IsVisible = false,
+        };
 
-            editRowHeightBeforeFlow = null;
-        }
-    }
-};
+        var editorHost = new Grid();
+        editorHost.Children.Add(textEditor);
+        editorHost.Children.Add(flowEditingView);
+        textEditGrid.Children.Add(editorHost);
+        Grid.SetRow(editorHost, 1);
 
-flowEditingButton.Click += (_, _) =>
-{
-    var activate = !flowEditingView.IsVisible;
-    flowEditingView.IsVisible = activate;
-    textEditor.IsVisible = !activate;
-    flowEditingButton.Content = activate ? "✓ Flow" : "Flow";
+        GridLength? editRowHeightBeforeFlow = null;
 
-    if (activate)
-    {
-        flowEditingView.Refresh();
-
-        if (!detachedEditBox &&
-            mainGrid.RowDefinitions.Count > 1)
+        void SetFlowEditingActive(
+            bool activate,
+            bool savePreference)
         {
-            editRowHeightBeforeFlow =
-                mainGrid.RowDefinitions[1].Height;
+            // Flow is an EBU STL-only editor. Hiding it for another format must
+            // not overwrite the user's remembered EBU preference.
+            if (activate && !vm.IsFormatEbu)
+            {
+                activate = false;
+            }
 
-            var targetHeight =
-                Math.Max(
-                    mainGrid.RowDefinitions[1].ActualHeight,
-                    360);
+            if (savePreference)
+            {
+                Se.Settings.Appearance.EbuStlFlowEditingEnabled =
+                    activate;
+            }
 
-            mainGrid.RowDefinitions[1].Height =
-                new GridLength(targetHeight);
+            if (flowEditingView.IsVisible == activate &&
+                textEditor.IsVisible == !activate)
+            {
+                flowEditingButton.Content =
+                    activate ? "✓ Flow" : "Flow";
+
+                return;
+            }
+
+            flowEditingView.IsVisible =
+                activate;
+
+            textEditor.IsVisible =
+                !activate;
+
+            flowEditingButton.Content =
+                activate ? "✓ Flow" : "Flow";
+
+            if (activate)
+            {
+                flowEditingView.Refresh();
+
+                if (!detachedEditBox &&
+                    mainGrid.RowDefinitions.Count > 1)
+                {
+                    if (!editRowHeightBeforeFlow.HasValue)
+                    {
+                        editRowHeightBeforeFlow =
+                            mainGrid.RowDefinitions[1].Height;
+                    }
+
+                    var targetHeight =
+                        Math.Max(
+                            mainGrid.RowDefinitions[1].ActualHeight,
+                            360);
+
+                    mainGrid.RowDefinitions[1].Height =
+                        new GridLength(targetHeight);
+                }
+            }
+            else if (!detachedEditBox &&
+                     editRowHeightBeforeFlow.HasValue &&
+                     mainGrid.RowDefinitions.Count > 1)
+            {
+                mainGrid.RowDefinitions[1].Height =
+                    editRowHeightBeforeFlow.Value;
+
+                editRowHeightBeforeFlow =
+                    null;
+            }
         }
-    }
-    else if (!detachedEditBox &&
-             editRowHeightBeforeFlow.HasValue &&
-             mainGrid.RowDefinitions.Count > 1)
-    {
-        mainGrid.RowDefinitions[1].Height =
-            editRowHeightBeforeFlow.Value;
 
-        editRowHeightBeforeFlow = null;
-    }
-}; 
- 
+        var flowRestoreGeneration = 0;
+
+        void RestoreRememberedFlowEditingDeferred()
+        {
+            var generation =
+                ++flowRestoreGeneration;
+
+            // FlowEditingView listens to subtitle collection changes. If Flow is
+            // made visible while an EBU STL file is still being imported, the view
+            // can be rebuilt repeatedly as subtitles arrive. Queue the remembered
+            // Flow restore behind the current UI/import work instead.
+            Dispatcher.UIThread.Post(
+                () =>
+                {
+                    if (generation != flowRestoreGeneration ||
+                        !vm.IsFormatEbu)
+                    {
+                        return;
+                    }
+
+                    SetFlowEditingActive(
+                        Se.Settings.Appearance
+                            .EbuStlFlowEditingEnabled,
+                        savePreference: false);
+                },
+                DispatcherPriority.Background);
+        }
+
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName !=
+                nameof(MainViewModel.IsFormatEbu))
+            {
+                return;
+            }
+
+            if (!vm.IsFormatEbu)
+            {
+                // Cancel any queued EBU restore, but keep the remembered EBU
+                // Flow/Text preference for the next EBU STL file.
+                flowRestoreGeneration++;
+
+                SetFlowEditingActive(
+                    activate: false,
+                    savePreference: false);
+
+                return;
+            }
+
+            // Keep the lightweight normal editor active during the import.
+            SetFlowEditingActive(
+                activate: false,
+                savePreference: false);
+
+            RestoreRememberedFlowEditingDeferred();
+        };
+
+        flowEditingButton.Click += (_, _) =>
+        {
+            // A manual choice wins over a queued automatic restore.
+            flowRestoreGeneration++;
+
+            SetFlowEditingActive(
+                activate: !flowEditingView.IsVisible,
+                savePreference: true);
+        };
+
+        // The layout can also be built while an EBU STL file is already open.
+        // Use the same deferred path instead of constructing Flow synchronously.
+        if (vm.IsFormatEbu &&
+            Se.Settings.Appearance.EbuStlFlowEditingEnabled)
+        {
+            RestoreRememberedFlowEditingDeferred();
+        }
 
         var textTotalLengthLabel = new TextBlock
         {

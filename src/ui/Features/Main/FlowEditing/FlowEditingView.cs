@@ -33,8 +33,11 @@ public sealed class FlowEditingView : Border
     private readonly Dictionary<FlowEditingItem, TextBox> _textBoxes = new();
     private readonly Dictionary<FlowEditingItem, Border> _rowBorders = new();
     private readonly Dictionary<FlowEditingItem, TextBlock> _numberBlocks = new();
+    private readonly HashSet<SubtitleLineViewModel> _selectedSources = new();
 
     private readonly INotifyCollectionChanged? _observableSubtitles;
+
+    private SubtitleLineViewModel? _selectionAnchorSource;
 
     private SubtitleLineViewModel? _pendingFocusSource;
     private bool _pendingFocusAtStart;
@@ -91,6 +94,20 @@ public sealed class FlowEditingView : Border
 
         var subtitles = _vm.Subtitles.ToList();
 
+        _selectedSources.RemoveWhere(
+            source => !subtitles.Contains(source));
+
+        if (_selectedSources.Count == 0 &&
+            _vm.SelectedSubtitle != null &&
+            subtitles.Contains(_vm.SelectedSubtitle))
+        {
+            _selectedSources.Add(
+                _vm.SelectedSubtitle);
+
+            _selectionAnchorSource =
+                _vm.SelectedSubtitle;
+        }
+
         if (subtitles.Count == 0)
         {
             _itemsPanel.Children.Add(
@@ -127,6 +144,8 @@ public sealed class FlowEditingView : Border
             _itemsPanel.Children.Add(
                 MakeRow(
                     item,
+                    _selectedSources.Contains(
+                        subtitle) ||
                     ReferenceEquals(
                         subtitle,
                         _vm.SelectedSubtitle)));
@@ -197,11 +216,21 @@ public sealed class FlowEditingView : Border
             });
 
         textBox.GotFocus +=
-            (_, _) => SelectItem(item);
+            (_, _) =>
+            {
+                if (!_selectedSources.Contains(
+                        item.Source))
+                {
+                    SelectItem(item);
+                }
+            };
 
         textBox.AddHandler(
             InputElement.PointerPressedEvent,
-            (_, _) => SelectItem(item),
+            (_, e) => HandlePointerSelection(
+                item,
+                textBox,
+                e),
             Avalonia.Interactivity.RoutingStrategies.Tunnel);
 
         // Flow paste is handled before the TextBox inserts raw clipboard text.
@@ -281,6 +310,14 @@ public sealed class FlowEditingView : Border
             CornerRadius = new CornerRadius(4),
             Background = GetRowBackground(isCurrent),
         };
+
+        rowBorder.AddHandler(
+            InputElement.PointerPressedEvent,
+            (_, e) => HandlePointerSelection(
+                item,
+                rowBorder,
+                e),
+            Avalonia.Interactivity.RoutingStrategies.Tunnel);
 
         rowBorder.ContextMenu =
             CreateFlowContextMenu(
@@ -412,11 +449,247 @@ public sealed class FlowEditingView : Border
         items.Add(
             pasteAfterMenuItem);
 
+        items.Add(
+            new Separator());
+
+        var deleteSelectedMenuItem =
+            new MenuItem
+            {
+                Header =
+                    _selectedSources.Count > 1
+                        ? "Delete selected subtitles"
+                        : "Delete subtitle",
+            };
+
+        deleteSelectedMenuItem.Click +=
+            (_, _) =>
+            {
+                if (!_selectedSources.Contains(
+                        item.Source))
+                {
+                    SelectItem(item);
+                }
+
+                DeleteSelectedSubtitles();
+            };
+
+        items.Add(
+            deleteSelectedMenuItem);
+
         return new ContextMenu
         {
             ItemsSource =
                 items,
         };
+    }
+
+    private void HandlePointerSelection(
+        FlowEditingItem item,
+        Control control,
+        PointerPressedEventArgs e)
+    {
+        var point =
+            e.GetCurrentPoint(
+                control);
+
+        var isRightClick =
+            point.Properties.IsRightButtonPressed;
+
+        if (isRightClick)
+        {
+            if (!_selectedSources.Contains(
+                    item.Source))
+            {
+                SelectItem(item);
+            }
+
+            return;
+        }
+
+        var toggle =
+            e.KeyModifiers.HasFlag(
+                KeyModifiers.Control) ||
+            e.KeyModifiers.HasFlag(
+                KeyModifiers.Meta);
+
+        var range =
+            e.KeyModifiers.HasFlag(
+                KeyModifiers.Shift);
+
+        if (range)
+        {
+            SelectRangeTo(
+                item.Source);
+
+            // PointerPressed tunnels through both the Flow row and the TextBox.
+            // Without marking the event handled, Shift/Cmd selection runs twice
+            // when clicking directly in the text. On macOS this made Cmd-click
+            // add and immediately remove the same subtitle again.
+            e.Handled = true;
+
+            return;
+        }
+
+        if (toggle)
+        {
+            ToggleSelection(
+                item.Source);
+
+            // Prevent the same Cmd/Ctrl-click from being processed a second
+            // time by the nested TextBox handler.
+            e.Handled = true;
+
+            return;
+        }
+
+        SelectItem(item);
+    }
+
+    private void ToggleSelection(
+        SubtitleLineViewModel source)
+    {
+        if (_selectedSources.Contains(source))
+        {
+            if (_selectedSources.Count > 1)
+            {
+                _selectedSources.Remove(source);
+            }
+        }
+        else
+        {
+            _selectedSources.Add(source);
+        }
+
+        _selectionAnchorSource =
+            source;
+
+        _vm.SelectedSubtitle =
+            source;
+
+        UpdateSelectionVisuals();
+    }
+
+    private void SelectRangeTo(
+        SubtitleLineViewModel source)
+    {
+        var subtitles =
+            _vm.Subtitles.ToList();
+
+        var anchor =
+            _selectionAnchorSource ??
+            _vm.SelectedSubtitle ??
+            source;
+
+        var anchorIndex =
+            subtitles.IndexOf(anchor);
+
+        var sourceIndex =
+            subtitles.IndexOf(source);
+
+        if (anchorIndex < 0 ||
+            sourceIndex < 0)
+        {
+            _selectedSources.Clear();
+            _selectedSources.Add(source);
+        }
+        else
+        {
+            _selectedSources.Clear();
+
+            var start =
+                Math.Min(
+                    anchorIndex,
+                    sourceIndex);
+
+            var end =
+                Math.Max(
+                    anchorIndex,
+                    sourceIndex);
+
+            for (var i = start; i <= end; i++)
+            {
+                if (!subtitles[i].IsReferenceOnly)
+                {
+                    _selectedSources.Add(
+                        subtitles[i]);
+                }
+            }
+        }
+
+        _vm.SelectedSubtitle =
+            source;
+
+        UpdateSelectionVisuals();
+    }
+
+    private void DeleteSelectedSubtitles()
+    {
+        if (_selectedSources.Count == 0)
+        {
+            return;
+        }
+
+        var subtitles =
+            _vm.Subtitles;
+
+        var indices =
+            _selectedSources
+                .Select(subtitles.IndexOf)
+                .Where(index => index >= 0)
+                .OrderByDescending(index => index)
+                .ToList();
+
+        if (indices.Count == 0)
+        {
+            return;
+        }
+
+        var firstIndex =
+            indices.Min();
+
+        foreach (var index in indices)
+        {
+            if (index >= 0 &&
+                index < subtitles.Count &&
+                !subtitles[index].IsReferenceOnly)
+            {
+                subtitles.RemoveAt(
+                    index);
+            }
+        }
+
+        RenumberSubtitles();
+
+        _selectedSources.Clear();
+        _selectionAnchorSource =
+            null;
+
+        if (subtitles.Count > 0)
+        {
+            var newIndex =
+                Math.Min(
+                    firstIndex,
+                    subtitles.Count - 1);
+
+            var selected =
+                subtitles[newIndex];
+
+            _selectedSources.Add(
+                selected);
+
+            _selectionAnchorSource =
+                selected;
+
+            _vm.SelectedSubtitle =
+                selected;
+        }
+        else
+        {
+            _vm.SelectedSubtitle =
+                null;
+        }
+
+        Refresh();
     }
 
     private static IBrush GetRowBackground(bool isCurrent)
@@ -2067,6 +2340,14 @@ public sealed class FlowEditingView : Border
     private void SelectItem(
         FlowEditingItem item)
     {
+        _selectedSources.Clear();
+
+        _selectedSources.Add(
+            item.Source);
+
+        _selectionAnchorSource =
+            item.Source;
+
         if (!ReferenceEquals(
                 _vm.SelectedSubtitle,
                 item.Source))
@@ -2083,9 +2364,8 @@ public sealed class FlowEditingView : Border
         foreach (var item in _items)
         {
             var isCurrent =
-                ReferenceEquals(
-                    item.Source,
-                    _vm.SelectedSubtitle);
+                _selectedSources.Contains(
+                    item.Source);
 
             if (_rowBorders.TryGetValue(
                     item,
@@ -2165,6 +2445,19 @@ public sealed class FlowEditingView : Border
         if (IsSubtitleCurrentlyVisible(
                 _vm.SelectedSubtitle))
         {
+            if (_vm.SelectedSubtitle != null &&
+                !_selectedSources.Contains(
+                    _vm.SelectedSubtitle))
+            {
+                _selectedSources.Clear();
+
+                _selectedSources.Add(
+                    _vm.SelectedSubtitle);
+
+                _selectionAnchorSource =
+                    _vm.SelectedSubtitle;
+            }
+
             UpdateSelectionVisuals();
             ApplyPendingFocus();
             CenterSelectedSubtitleInFlow();

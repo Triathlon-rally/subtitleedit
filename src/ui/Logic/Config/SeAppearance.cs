@@ -35,6 +35,14 @@ public class SeAppearance
 
     public bool SubtitleTextBoxCenterText { get; set; }
     public bool SubtitleTextBoxLiveSpellCheck { get; set; }
+
+    /// <summary>
+    /// Remembers the user's preferred EBU STL editor. The preference is only
+    /// applied while an EBU STL subtitle is open; other formats always use the
+    /// normal text editor without clearing this preference.
+    /// </summary>
+    public bool EbuStlFlowEditingEnabled { get; set; }
+
     public bool ShowHints { get; set; }
     public bool GridCompactMode { get; set; }
     public string BookmarkColor { get; set; }
@@ -114,6 +122,7 @@ public class SeAppearance
         ShowHints = true;
         SubtitleTextBoxCenterText = false;
         SubtitleTextBoxLiveSpellCheck = false;
+        EbuStlFlowEditingEnabled = false;
         SubtitleGridFormattingType = (int)SubtitleGridFormattingTypes.ShowFormatting;
         GridLinesAppearance = SeGridLinesVisibility.None.ToString();
         GridAlternatingRows = true;

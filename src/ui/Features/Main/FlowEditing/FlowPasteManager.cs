@@ -11,7 +11,15 @@ namespace Nikse.SubtitleEdit.Features.Main.FlowEditing;
 public sealed class FlowPasteManager
 {
     private static readonly Regex TimeCodeRangeRegex = new(
-        @"^\s*(?<start>\d{1,2}:\d{2}:\d{2}(?:(?:[.,]\d{1,3})|(?::\d{2}))?)\s*(?:-->|-|–|—)\s*(?<end>\d{1,2}:\d{2}:\d{2}(?:(?:[.,]\d{1,3})|(?::\d{2}))?)\s*$",
+        @"^\s*(?<start>\d{1,2}:\d{2}:\d{2}(?:(?:[.,]\d{1,3})|(?::\d{2}))?)\s*(?:-->|->|–|—|-|\t+|\s{2,})\s*(?<end>\d{1,2}:\d{2}:\d{2}(?:(?:[.,]\d{1,3})|(?::\d{2}))?)\s*$",
+        RegexOptions.Compiled);
+
+    private static readonly Regex TimeCodeLikeRegex = new(
+        @"\d{1,2}:\d{2}:\d{2}(?:(?:[.,]\d{1,3})|(?::\d{2}))?",
+        RegexOptions.Compiled);
+
+    private static readonly Regex NumericCueRegex = new(
+        @"^\s*\d+\s*$",
         RegexOptions.Compiled);
 
     public FlowPastePlan BuildPlan(
@@ -30,14 +38,21 @@ public sealed class FlowPasteManager
                 "Clipboard contains no text.");
         }
 
-        var timedBlocks =
-            TryParseTimedBlocks(
+        var timedParse =
+            ParseTimedBlocks(
                 normalized);
 
-        if (timedBlocks.Count > 0)
+        if (timedParse.HasTimeCodes)
         {
+            if (!timedParse.Success)
+            {
+                return FlowPastePlan.Failure(
+                    timedParse.ErrorMessage ??
+                    "The pasted time codes could not be parsed.");
+            }
+
             return BuildTimedPlan(
-                timedBlocks,
+                timedParse.Blocks,
                 insertionStart,
                 nextExistingSubtitleStart,
                 hasColor);
@@ -133,6 +148,9 @@ public sealed class FlowPasteManager
         var maxCharactersPerLine =
             hasColor ? 36 : 37;
 
+        var requiredGapMs =
+            GetMinimumGapMilliseconds();
+
         var items =
             new List<FlowPasteItem>();
 
@@ -144,25 +162,28 @@ public sealed class FlowPasteManager
                     "A pasted time code has an end time before its start time.");
             }
 
-            var subtitleTexts =
-                SplitPlainTextIntoSubtitles(
-                    block.Text,
-                    maxCharactersPerLine);
+            var normalizedText =
+                NormalizeTimedSubtitleText(
+                    block.Text);
 
-            // A block with explicit TC may not silently create extra subtitle
-            // events because there are no corresponding extra time codes.
-            if (subtitleTexts.Count != 1)
+            if (!TryRebalanceTimedSubtitle(
+                    normalizedText,
+                    maxCharactersPerLine,
+                    out var finalText))
             {
                 return FlowPastePlan.Failure(
-                    $"A time-coded subtitle exceeds the Teletext limit " +
-                    $"(max 2 lines, {maxCharactersPerLine} characters per line).");
+                    string.Format(
+                        CultureInfo.InvariantCulture,
+                        "A time-coded subtitle exceeds the Teletext limit " +
+                        "(max 2 lines, {0} characters per line).",
+                        maxCharactersPerLine));
             }
 
             items.Add(
                 new FlowPasteItem(
                     block.StartTime,
                     block.EndTime,
-                    subtitleTexts[0],
+                    finalText,
                     HasExplicitTimeCodes: true));
         }
 
@@ -172,56 +193,394 @@ public sealed class FlowPasteManager
                 "No valid time-coded subtitles were found.");
         }
 
-        // When pasted into a position in an existing file, explicit time codes
-        // must not begin before the chosen insertion point.
+        // Explicit TCs are absolute. They are never shifted to the selected
+        // Flow position. The selected anchor merely defines the earliest
+        // available insertion point.
         if (items[0].StartTime < insertionStart)
         {
             return FlowPastePlan.Failure(
-                "The first pasted time code starts before the insertion point.");
+                string.Format(
+                    CultureInfo.InvariantCulture,
+                    "Paste not possible. The first pasted subtitle starts at {0}, " +
+                    "before the available insertion time {1}.",
+                    FormatTime(items[0].StartTime),
+                    FormatTime(insertionStart)));
         }
-
-        var requiredGapMs =
-            GetMinimumGapMilliseconds();
 
         for (var i = 1; i < items.Count; i++)
         {
+            if (items[i].StartTime < items[i - 1].EndTime)
+            {
+                return FlowPastePlan.Failure(
+                    string.Format(
+                        CultureInfo.InvariantCulture,
+                        "Paste not possible. Pasted subtitles {0} and {1} overlap.",
+                        i,
+                        i + 1));
+            }
+
             var actualGapMs =
                 (items[i].StartTime -
                  items[i - 1].EndTime)
                 .TotalMilliseconds;
 
-            if (actualGapMs < requiredGapMs)
+            if (actualGapMs + 0.5 < requiredGapMs)
             {
                 return FlowPastePlan.Failure(
                     string.Format(
                         CultureInfo.InvariantCulture,
-                        "The pasted time codes contain a gap of {0:0.00} s, " +
-                        "but the current minimum gap is {1:0.00} s.",
+                        "Paste not possible. The pasted time codes contain a gap of " +
+                        "{0:0.00} s, but the current minimum gap is {1:0.00} s.",
                         actualGapMs / 1000.0,
                         requiredGapMs / 1000.0));
             }
         }
 
-        var requiredEnd =
-            items[^1].EndTime;
-
-        var fitResult =
-            CheckAvailableSpace(
-                insertionStart,
-                requiredEnd,
-                nextExistingSubtitleStart);
-
-        if (!fitResult.Success)
+        if (nextExistingSubtitleStart.HasValue)
         {
-            return FlowPastePlan.Failure(
-                fitResult.ErrorMessage!,
-                items,
-                hasExplicitTimeCodes: true);
+            var latestAllowedEnd =
+                nextExistingSubtitleStart.Value -
+                TimeSpan.FromMilliseconds(
+                    requiredGapMs);
+
+            if (items[^1].EndTime > latestAllowedEnd)
+            {
+                var availableSeconds =
+                    Math.Max(
+                        0.0,
+                        (latestAllowedEnd -
+                         insertionStart)
+                        .TotalSeconds);
+
+                var requiredSeconds =
+                    Math.Max(
+                        0.0,
+                        (items[^1].EndTime -
+                         insertionStart)
+                        .TotalSeconds);
+
+                return FlowPastePlan.Failure(
+                    string.Format(
+                        CultureInfo.InvariantCulture,
+                        "Not enough time before the next subtitle. " +
+                        "The pasted time-coded block requires {0:0.00} s, " +
+                        "but only {1:0.00} s are available.",
+                        requiredSeconds,
+                        availableSeconds));
+            }
         }
 
         return FlowPastePlan.Successful(
             items,
             hasExplicitTimeCodes: true);
+    }
+
+    private static FlowTimedParseResult ParseTimedBlocks(
+        string text)
+    {
+        var lines =
+            text.Replace(
+                "\r\n",
+                "\n",
+                StringComparison.Ordinal)
+                .Replace(
+                    '\r',
+                    '\n')
+                .Split('\n');
+
+        var hasTimeCodes =
+            lines.Any(
+                line =>
+                    TimeCodeLikeRegex.IsMatch(line));
+
+        if (!hasTimeCodes)
+        {
+            return FlowTimedParseResult.NoTimeCodes();
+        }
+
+        var blocks =
+            new List<FlowTimedTextBlock>();
+
+        var index = 0;
+
+        while (index < lines.Length)
+        {
+            while (index < lines.Length &&
+                   string.IsNullOrWhiteSpace(lines[index]))
+            {
+                index++;
+            }
+
+            if (index >= lines.Length)
+            {
+                break;
+            }
+
+            // SRT-style cue number.
+            if (NumericCueRegex.IsMatch(lines[index]) &&
+                index + 1 < lines.Length &&
+                TimeCodeRangeRegex.IsMatch(lines[index + 1].Trim()))
+            {
+                index++;
+            }
+
+            if (index >= lines.Length)
+            {
+                break;
+            }
+
+            var timeLine =
+                lines[index].Trim();
+
+            var match =
+                TimeCodeRangeRegex.Match(
+                    timeLine);
+
+            if (!match.Success)
+            {
+                return FlowTimedParseResult.Failure(
+                    $"Time-coded paste could not be parsed near: \"{timeLine}\"");
+            }
+
+            if (!TryParseTimeCode(
+                    match.Groups["start"].Value,
+                    out var startTime) ||
+                !TryParseTimeCode(
+                    match.Groups["end"].Value,
+                    out var endTime))
+            {
+                return FlowTimedParseResult.Failure(
+                    $"Invalid time code: \"{timeLine}\"");
+            }
+
+            index++;
+
+            var textLines =
+                new List<string>();
+
+            while (index < lines.Length)
+            {
+                var candidate =
+                    lines[index];
+
+                if (string.IsNullOrWhiteSpace(candidate))
+                {
+                    var lookAhead =
+                        index + 1;
+
+                    while (lookAhead < lines.Length &&
+                           string.IsNullOrWhiteSpace(lines[lookAhead]))
+                    {
+                        lookAhead++;
+                    }
+
+                    if (lookAhead >= lines.Length)
+                    {
+                        index =
+                            lookAhead;
+
+                        break;
+                    }
+
+                    if (NumericCueRegex.IsMatch(lines[lookAhead]) &&
+                        lookAhead + 1 < lines.Length &&
+                        TimeCodeRangeRegex.IsMatch(
+                            lines[lookAhead + 1].Trim()))
+                    {
+                        index =
+                            lookAhead;
+
+                        break;
+                    }
+
+                    if (TimeCodeRangeRegex.IsMatch(
+                            lines[lookAhead].Trim()))
+                    {
+                        index =
+                            lookAhead;
+
+                        break;
+                    }
+
+                    // A blank line inside cue text is kept as an intentional
+                    // line break. Teletext validation will reject >2 lines.
+                    textLines.Add(
+                        string.Empty);
+
+                    index++;
+                    continue;
+                }
+
+                if (TimeCodeRangeRegex.IsMatch(
+                        candidate.Trim()))
+                {
+                    break;
+                }
+
+                if (NumericCueRegex.IsMatch(candidate) &&
+                    index + 1 < lines.Length &&
+                    TimeCodeRangeRegex.IsMatch(
+                        lines[index + 1].Trim()))
+                {
+                    break;
+                }
+
+                textLines.Add(
+                    candidate);
+
+                index++;
+            }
+
+            var blockText =
+                string.Join(
+                    Environment.NewLine,
+                    textLines)
+                    .Trim();
+
+            if (blockText.Length == 0)
+            {
+                return FlowTimedParseResult.Failure(
+                    $"No subtitle text follows time code {FormatTime(startTime)}.");
+            }
+
+            blocks.Add(
+                new FlowTimedTextBlock(
+                    startTime,
+                    endTime,
+                    blockText));
+        }
+
+        if (blocks.Count == 0)
+        {
+            return FlowTimedParseResult.Failure(
+                "Time codes were detected, but no valid time-coded subtitles were found.");
+        }
+
+        return FlowTimedParseResult.Successful(
+            blocks);
+    }
+
+    private static bool TryRebalanceTimedSubtitle(
+        string text,
+        int maxCharactersPerLine,
+        out string result)
+    {
+        var normalized =
+            text.Replace(
+                "\r\n",
+                "\n",
+                StringComparison.Ordinal)
+                .Replace(
+                    '\r',
+                    '\n')
+                .Trim();
+
+        var lines =
+            normalized
+                .Split('\n')
+                .Select(line => line.Trim())
+                .Where(line => line.Length > 0)
+                .ToArray();
+
+        if (lines.Length <= 2 &&
+            lines.All(
+                line =>
+                    line.Length <=
+                    maxCharactersPerLine))
+        {
+            result =
+                string.Join(
+                    Environment.NewLine,
+                    lines);
+
+            return true;
+        }
+
+        var words =
+            normalized
+                .Split(
+                    new[] { ' ', '\t', '\r', '\n' },
+                    StringSplitOptions.RemoveEmptyEntries);
+
+        if (words.Length == 0)
+        {
+            result =
+                string.Empty;
+
+            return false;
+        }
+
+        var bestSplit =
+            -1;
+
+        var bestDifference =
+            int.MaxValue;
+
+        for (var i = 1; i < words.Length; i++)
+        {
+            var first =
+                string.Join(
+                    " ",
+                    words.Take(i));
+
+            var second =
+                string.Join(
+                    " ",
+                    words.Skip(i));
+
+            if (first.Length > maxCharactersPerLine ||
+                second.Length > maxCharactersPerLine)
+            {
+                continue;
+            }
+
+            var difference =
+                Math.Abs(
+                    first.Length -
+                    second.Length);
+
+            if (difference < bestDifference)
+            {
+                bestDifference =
+                    difference;
+
+                bestSplit =
+                    i;
+            }
+        }
+
+        if (bestSplit <= 0)
+        {
+            result =
+                normalized;
+
+            return false;
+        }
+
+        result =
+            string.Join(
+                " ",
+                words.Take(bestSplit)) +
+            Environment.NewLine +
+            string.Join(
+                " ",
+                words.Skip(bestSplit));
+
+        return true;
+    }
+
+    private static string NormalizeTimedSubtitleText(
+        string text)
+    {
+        return text
+            .Replace(
+                "\r\n",
+                "\n",
+                StringComparison.Ordinal)
+            .Replace(
+                '\r',
+                '\n')
+            .Trim();
     }
 
     private static FlowPasteSpaceResult CheckAvailableSpace(
@@ -239,7 +598,8 @@ public sealed class FlowPasteManager
 
         var latestAllowedEnd =
             nextExistingSubtitleStart.Value -
-            TimeSpan.FromMilliseconds(gapMs);
+            TimeSpan.FromMilliseconds(
+                gapMs);
 
         if (requiredEnd <= latestAllowedEnd)
         {
@@ -339,20 +699,22 @@ public sealed class FlowPasteManager
             NormalizeClipboardText(
                 text);
 
-        var tokens =
-            Tokenize(
-                normalized,
-                maxCharactersPerLine);
+        var words =
+            normalized
+                .Split(
+                    new[] { ' ', '\t', '\r', '\n' },
+                    StringSplitOptions.RemoveEmptyEntries)
+                .SelectMany(
+                    word =>
+                        SplitLongWord(
+                            word,
+                            maxCharactersPerLine))
+                .ToList();
 
         var result =
             new List<string>();
 
-        if (tokens.Count == 0)
-        {
-            return result;
-        }
-
-        var currentLines =
+        var lines =
             new List<string>(2);
 
         var currentLine =
@@ -365,7 +727,7 @@ public sealed class FlowPasteManager
                 return;
             }
 
-            currentLines.Add(
+            lines.Add(
                 currentLine.ToString());
 
             currentLine.Clear();
@@ -375,7 +737,7 @@ public sealed class FlowPasteManager
         {
             FlushLine();
 
-            if (currentLines.Count == 0)
+            if (lines.Count == 0)
             {
                 return;
             }
@@ -383,34 +745,13 @@ public sealed class FlowPasteManager
             result.Add(
                 string.Join(
                     Environment.NewLine,
-                    currentLines));
+                    lines));
 
-            currentLines.Clear();
+            lines.Clear();
         }
 
-        foreach (var token in tokens)
+        foreach (var word in words)
         {
-            if (token == FlowPasteToken.ParagraphBreak)
-            {
-                FlushSubtitle();
-                continue;
-            }
-
-            if (token == FlowPasteToken.LineBreak)
-            {
-                FlushLine();
-
-                if (currentLines.Count >= 2)
-                {
-                    FlushSubtitle();
-                }
-
-                continue;
-            }
-
-            var word =
-                token.Value;
-
             if (currentLine.Length == 0)
             {
                 currentLine.Append(
@@ -431,7 +772,7 @@ public sealed class FlowPasteManager
 
             FlushLine();
 
-            if (currentLines.Count >= 2)
+            if (lines.Count >= 2)
             {
                 FlushSubtitle();
             }
@@ -441,70 +782,6 @@ public sealed class FlowPasteManager
         }
 
         FlushSubtitle();
-
-        return result;
-    }
-
-    private static List<FlowPasteToken> Tokenize(
-        string text,
-        int maxCharactersPerLine)
-    {
-        var result =
-            new List<FlowPasteToken>();
-
-        var normalized =
-            text.Replace(
-                "\r\n",
-                "\n",
-                StringComparison.Ordinal)
-                .Replace(
-                    '\r',
-                    '\n');
-
-        var paragraphs =
-            normalized.Split(
-                "\n\n",
-                StringSplitOptions.None);
-
-        for (var p = 0; p < paragraphs.Length; p++)
-        {
-            var lines =
-                paragraphs[p].Split(
-                    '\n',
-                    StringSplitOptions.None);
-
-            for (var l = 0; l < lines.Length; l++)
-            {
-                var words =
-                    lines[l].Split(
-                        new[] { ' ', '\t' },
-                        StringSplitOptions.RemoveEmptyEntries);
-
-                foreach (var word in words)
-                {
-                    foreach (var piece in SplitLongWord(
-                                 word,
-                                 maxCharactersPerLine))
-                    {
-                        result.Add(
-                            FlowPasteToken.Word(
-                                piece));
-                    }
-                }
-
-                if (l < lines.Length - 1)
-                {
-                    result.Add(
-                        FlowPasteToken.LineBreak);
-                }
-            }
-
-            if (p < paragraphs.Length - 1)
-            {
-                result.Add(
-                    FlowPasteToken.ParagraphBreak);
-            }
-        }
 
         return result;
     }
@@ -535,137 +812,6 @@ public sealed class FlowPasteManager
 
             index += length;
         }
-    }
-
-    private static List<FlowTimedTextBlock> TryParseTimedBlocks(
-        string text)
-    {
-        var lines =
-            text.Replace(
-                "\r\n",
-                "\n",
-                StringComparison.Ordinal)
-                .Replace(
-                    '\r',
-                    '\n')
-                .Split('\n');
-
-        var result =
-            new List<FlowTimedTextBlock>();
-
-        var foundAnyTimeCode =
-            false;
-
-        var index = 0;
-
-        while (index < lines.Length)
-        {
-            var line =
-                lines[index].Trim();
-
-            if (line.Length == 0)
-            {
-                index++;
-                continue;
-            }
-
-            var match =
-                TimeCodeRangeRegex.Match(
-                    line);
-
-            if (!match.Success)
-            {
-                if (foundAnyTimeCode)
-                {
-                    // Once a timed format has started, stray non-text structure
-                    // is considered malformed instead of silently switching to
-                    // plain-text mode.
-                    return new List<FlowTimedTextBlock>();
-                }
-
-                index++;
-                continue;
-            }
-
-            foundAnyTimeCode = true;
-
-            if (!TryParseTimeCode(
-                    match.Groups["start"].Value,
-                    out var startTime) ||
-                !TryParseTimeCode(
-                    match.Groups["end"].Value,
-                    out var endTime))
-            {
-                return new List<FlowTimedTextBlock>();
-            }
-
-            index++;
-
-            var textLines =
-                new List<string>();
-
-            while (index < lines.Length)
-            {
-                var candidate =
-                    lines[index];
-
-                if (TimeCodeRangeRegex.IsMatch(
-                        candidate.Trim()))
-                {
-                    break;
-                }
-
-                if (candidate.Length == 0 &&
-                    textLines.Count > 0)
-                {
-                    var nextNonEmpty =
-                        index + 1;
-
-                    while (nextNonEmpty < lines.Length &&
-                           string.IsNullOrWhiteSpace(
-                               lines[nextNonEmpty]))
-                    {
-                        nextNonEmpty++;
-                    }
-
-                    if (nextNonEmpty < lines.Length &&
-                        TimeCodeRangeRegex.IsMatch(
-                            lines[nextNonEmpty].Trim()))
-                    {
-                        index =
-                            nextNonEmpty;
-
-                        break;
-                    }
-                }
-
-                textLines.Add(
-                    candidate);
-
-                index++;
-            }
-
-            var blockText =
-                string.Join(
-                    Environment.NewLine,
-                    textLines)
-                    .Trim();
-
-            if (blockText.Length == 0)
-            {
-                return new List<FlowTimedTextBlock>();
-            }
-
-            result.Add(
-                new FlowTimedTextBlock(
-                    startTime,
-                    endTime,
-                    blockText));
-        }
-
-        return foundAnyTimeCode
-            ? result
-            : new List<FlowTimedTextBlock>();
     }
 
     private static bool TryParseTimeCode(
@@ -715,7 +861,9 @@ public sealed class FlowPasteManager
                         .DefaultFrameRate;
             }
 
-            if (frameRate <= 0)
+            if (frameRate <= 0 ||
+                frames < 0 ||
+                frames >= Math.Ceiling(frameRate))
             {
                 return false;
             }
@@ -779,6 +927,14 @@ public sealed class FlowPasteManager
             0.0,
             Se.Settings.General.MinimumBetweenLines
                 .GetMilliseconds());
+    }
+
+    private static string FormatTime(
+        TimeSpan value)
+    {
+        return value.ToString(
+            @"hh\:mm\:ss\.fff",
+            CultureInfo.InvariantCulture);
     }
 }
 
@@ -859,33 +1015,54 @@ public sealed record FlowPasteSpaceResult(
     }
 }
 
-public sealed record FlowPasteToken(
-    string Value,
-    FlowPasteTokenType Type)
+public sealed class FlowTimedParseResult
 {
-    public static readonly FlowPasteToken LineBreak =
-        new(
-            string.Empty,
-            FlowPasteTokenType.LineBreak);
-
-    public static readonly FlowPasteToken ParagraphBreak =
-        new(
-            string.Empty,
-            FlowPasteTokenType.ParagraphBreak);
-
-    public static FlowPasteToken Word(
-        string value)
+    private FlowTimedParseResult(
+        bool hasTimeCodes,
+        bool success,
+        IReadOnlyList<FlowTimedTextBlock> blocks,
+        string? errorMessage)
     {
-        return new FlowPasteToken(
-            value,
-            FlowPasteTokenType.Word);
+        HasTimeCodes = hasTimeCodes;
+        Success = success;
+        Blocks = blocks;
+        ErrorMessage = errorMessage;
     }
 
-}
+    public bool HasTimeCodes { get; }
 
-public enum FlowPasteTokenType
-{
-    Word,
-    LineBreak,
-    ParagraphBreak,
+    public bool Success { get; }
+
+    public IReadOnlyList<FlowTimedTextBlock> Blocks { get; }
+
+    public string? ErrorMessage { get; }
+
+    public static FlowTimedParseResult NoTimeCodes()
+    {
+        return new FlowTimedParseResult(
+            false,
+            true,
+            Array.Empty<FlowTimedTextBlock>(),
+            null);
+    }
+
+    public static FlowTimedParseResult Successful(
+        IReadOnlyList<FlowTimedTextBlock> blocks)
+    {
+        return new FlowTimedParseResult(
+            true,
+            true,
+            blocks,
+            null);
+    }
+
+    public static FlowTimedParseResult Failure(
+        string errorMessage)
+    {
+        return new FlowTimedParseResult(
+            true,
+            false,
+            Array.Empty<FlowTimedTextBlock>(),
+            errorMessage);
+    }
 }
