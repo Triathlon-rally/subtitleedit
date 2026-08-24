@@ -724,7 +724,7 @@ public sealed class FlowEditingView : Border
                 subtitle));
     }
 
-    private void VmOnPropertyChanged(
+      private void VmOnPropertyChanged(
         object? sender,
         PropertyChangedEventArgs e)
     {
@@ -733,10 +733,33 @@ public sealed class FlowEditingView : Border
             return;
         }
 
-        if (e.PropertyName !=
-            nameof(MainViewModel.SelectedSubtitle))
+        if (e.PropertyName != nameof(MainViewModel.SelectedSubtitle) &&
+            e.PropertyName != nameof(MainViewModel.SelectedSubtitleIndex))
         {
             return;
+        }
+
+        // A click in the main subtitle grid can update SelectedSubtitleIndex
+        // before/without the Flow view seeing SelectedSubtitle. Synchronize
+        // the selected object explicitly from the grid index.
+        if (e.PropertyName == nameof(MainViewModel.SelectedSubtitleIndex) &&
+            _vm.SelectedSubtitleIndex.HasValue)
+        {
+            var index = _vm.SelectedSubtitleIndex.Value;
+
+            if (index >= 0 &&
+                index < _vm.Subtitles.Count)
+            {
+                var selected = _vm.Subtitles[index];
+
+                if (!ReferenceEquals(
+                        _vm.SelectedSubtitle,
+                        selected))
+                {
+                    _vm.SelectedSubtitle = selected;
+                    return;
+                }
+            }
         }
 
         if (IsSubtitleCurrentlyVisible(
@@ -744,12 +767,75 @@ public sealed class FlowEditingView : Border
         {
             UpdateSelectionVisuals();
             ApplyPendingFocus();
+            CenterSelectedSubtitleInFlow();
             return;
         }
 
         Refresh();
-    }
 
+        Dispatcher.UIThread.Post(
+            CenterSelectedSubtitleInFlow);
+    }
+    private void CenterSelectedSubtitleInFlow()
+    {
+        var selected =
+            _vm.SelectedSubtitle;
+
+        if (selected == null)
+        {
+            return;
+        }
+
+        var item =
+            _items.FirstOrDefault(
+                x => ReferenceEquals(
+                    x.Source,
+                    selected));
+
+        if (item == null ||
+            !_rowBorders.TryGetValue(
+                item,
+                out var border))
+        {
+            return;
+        }
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            var point =
+                border.TranslatePoint(
+                    new Point(0, 0),
+                    _itemsPanel);
+
+            if (!point.HasValue)
+            {
+                return;
+            }
+
+            var targetOffset =
+                point.Value.Y +
+                border.Bounds.Height / 2 -
+                _scrollViewer.Viewport.Height / 2;
+
+            var maxOffset =
+                Math.Max(
+                    0,
+                    _scrollViewer.Extent.Height -
+                    _scrollViewer.Viewport.Height);
+
+            targetOffset =
+                Math.Max(
+                    0,
+                    Math.Min(
+                        targetOffset,
+                        maxOffset));
+
+            _scrollViewer.Offset =
+                new Vector(
+                    _scrollViewer.Offset.X,
+                    targetOffset);
+        });
+    }
     private void SubtitlesOnCollectionChanged(
         object? sender,
         NotifyCollectionChangedEventArgs e)
