@@ -202,7 +202,14 @@ public sealed class FlowEditingView : Border
             (_, _) => SelectItem(item),
             Avalonia.Interactivity.RoutingStrategies.Tunnel);
 
-               // Arrow navigation must be handled before the TextBox moves the caret.
+        // Return must be handled before the TextBox inserts a third line.
+        textBox.AddHandler(
+            InputElement.KeyDownEvent,
+            (_, e) => TextBoxOnReturnKeyDown(item, textBox, e),
+            Avalonia.Interactivity.RoutingStrategies.Tunnel,
+            handledEventsToo: true);
+
+        // Arrow navigation must be handled before the TextBox moves the caret.
         textBox.AddHandler(
             InputElement.KeyDownEvent,
             (_, e) => TextBoxOnArrowKeyDown(item, textBox, e),
@@ -283,6 +290,810 @@ public sealed class FlowEditingView : Border
                     160,
                     160))
             : Brushes.Transparent;
+    }
+
+    private void TextBoxOnReturnKeyDown(
+        FlowEditingItem item,
+        TextBox textBox,
+        KeyEventArgs e)
+    {
+        if ((e.Key != Key.Enter && e.Key != Key.Return) ||
+            e.KeyModifiers != KeyModifiers.None ||
+            textBox.SelectionStart != textBox.SelectionEnd)
+        {
+            return;
+        }
+
+        var text = textBox.Text ?? string.Empty;
+
+        // A one-line subtitle behaves differently depending on the caret:
+        // - Return inside the text creates the second text line in the same UT.
+        // - Return at the very end creates a new subtitle after the current one.
+        if (GetPlainLineCount(text) < 2)
+        {
+            if (textBox.CaretIndex >= text.Length)
+            {
+                e.Handled = true;
+                CreateSubtitleAfter(item);
+                return;
+            }
+
+            if (_vm.IsFormatEbu)
+            {
+                var source = item.Source;
+                var oldLineCount = GetPlainLineCount(source.Text);
+                var originalMarginV = source.MarginV;
+
+                Dispatcher.UIThread.Post(() =>
+                {
+                    RebalanceTeletextSubtitle(source);
+
+                    var newLineCount =
+                        GetPlainLineCount(source.Text);
+
+                    var newRow =
+                        TeletextRowHelper.GetRowKeepingBottomEdge(
+                            originalMarginV,
+                            oldLineCount,
+                            newLineCount,
+                            Configuration.Settings.SubtitleSettings
+                                .EbuStlTeletextUseDoubleHeight);
+
+                    if (newRow.HasValue)
+                    {
+                        source.MarginV =
+                            newRow.Value.ToString(
+                                CultureInfo.InvariantCulture);
+                    }
+                });
+            }
+
+            return;
+        }
+
+        // A Flow subtitle may never grow beyond two text lines.
+        // If Return would create a third line, consume the key. Split only when
+        // both sides of the caret contain visible text; otherwise Return does
+        // nothing instead of creating an empty subtitle or a third line.
+        e.Handled = true;
+        SplitAtCaret(item, textBox);
+    }
+
+    private bool CreateSubtitleAfter(
+        FlowEditingItem currentItem)
+    {
+        var source = currentItem.Source;
+
+        if (source.IsReferenceOnly)
+        {
+            return false;
+        }
+
+        var subtitles = _vm.Subtitles;
+        var sourceIndex = subtitles.IndexOf(source);
+
+        if (sourceIndex < 0)
+        {
+            return false;
+        }
+
+        var gapMs =
+            Math.Max(
+                0.0,
+                Se.Settings.General.MinimumBetweenLines
+                    .GetMilliseconds());
+
+        var startMs =
+            source.EndTime.TotalMilliseconds +
+            gapMs;
+
+        // If there is already a following subtitle, never silently push it.
+        // For now we only create the new empty UT when there is enough room.
+        if (sourceIndex + 1 < subtitles.Count)
+        {
+            var next = subtitles[sourceIndex + 1];
+
+            if (!next.IsReferenceOnly &&
+                startMs >= next.StartTime.TotalMilliseconds)
+            {
+                return false;
+            }
+        }
+
+        var newSubtitle =
+            new SubtitleLineViewModel(
+                source,
+                generateNewId: true)
+            {
+                Text = string.Empty,
+            };
+
+        var defaultDurationMs =
+            Math.Max(
+                1.0,
+                Se.Settings.General.NewEmptyDefaultMs);
+
+        var endMs =
+            startMs + defaultDurationMs;
+
+        if (sourceIndex + 1 < subtitles.Count)
+        {
+            var next = subtitles[sourceIndex + 1];
+
+            if (!next.IsReferenceOnly)
+            {
+                var latestEndMs =
+                    next.StartTime.TotalMilliseconds -
+                    gapMs;
+
+                endMs =
+                    Math.Min(
+                        endMs,
+                        latestEndMs);
+            }
+        }
+
+        if (endMs <= startMs)
+        {
+            return false;
+        }
+
+        newSubtitle.SetStartTimeOnly(
+            TimeSpan.FromMilliseconds(startMs));
+
+        newSubtitle.EndTime =
+            TimeSpan.FromMilliseconds(endMs);
+
+        if (_vm.IsFormatEbu)
+        {
+            var oneLineRow =
+                TeletextRowHelper.GetRowKeepingBottomEdge(
+                    source.MarginV,
+                    GetPlainLineCount(source.Text),
+                    1,
+                    Configuration.Settings.SubtitleSettings
+                        .EbuStlTeletextUseDoubleHeight);
+
+            if (oneLineRow.HasValue)
+            {
+                newSubtitle.MarginV =
+                    oneLineRow.Value.ToString(
+                        CultureInfo.InvariantCulture);
+            }
+            else
+            {
+                newSubtitle.MarginV =
+                    source.MarginV;
+            }
+        }
+
+        subtitles.Insert(
+            sourceIndex + 1,
+            newSubtitle);
+
+        RenumberSubtitles();
+
+        _pendingFocusSource =
+            newSubtitle;
+
+        _pendingFocusAtStart =
+            true;
+
+        _vm.SelectedSubtitle =
+            newSubtitle;
+
+        Refresh();
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            var targetItem =
+                _items.FirstOrDefault(
+                    x => ReferenceEquals(
+                        x.Source,
+                        newSubtitle));
+
+            if (targetItem != null)
+            {
+                FocusTextBox(
+                    targetItem,
+                    focusAtStart: true);
+            }
+
+            CenterSelectedSubtitleInFlow();
+        });
+
+        return true;
+    }
+
+    private bool SplitAtCaret(
+        FlowEditingItem currentItem,
+        TextBox textBox)
+    {
+        var source = currentItem.Source;
+
+        if (source.IsReferenceOnly)
+        {
+            return false;
+        }
+
+        var subtitles = _vm.Subtitles;
+        var sourceIndex = subtitles.IndexOf(source);
+
+        if (sourceIndex < 0)
+        {
+            return false;
+        }
+
+        var text = textBox.Text ?? string.Empty;
+        var caretIndex = textBox.CaretIndex;
+
+        // Do not create an empty subtitle before or after the current one.
+        if (caretIndex <= 0 || caretIndex >= text.Length)
+        {
+            return false;
+        }
+
+        var visibleBefore = text[..caretIndex].Trim();
+        var visibleAfter = text[caretIndex..].Trim();
+
+        if (visibleBefore.Length == 0 ||
+            visibleAfter.Length == 0)
+        {
+            return false;
+        }
+
+        var originalStartMs = source.StartTime.TotalMilliseconds;
+        var originalEndMs = source.EndTime.TotalMilliseconds;
+
+        // Keep the hidden EBU/HTML colour tag when synchronizing the visible
+        // Flow text back to the source subtitle.
+        var sourceText =
+            FlowTextParser.ApplyEditedText(
+                source.Text,
+                text);
+
+        source.Text = sourceText;
+
+        // The Flow caret index belongs to the visible text (font tags stripped),
+        // while SplitManager expects an index in Source.Text. After
+        // ApplyEditedText the visible text occurs as one contiguous substring,
+        // so translate the caret into the tagged source string.
+        var visibleTextStart =
+            sourceText.IndexOf(
+                text,
+                StringComparison.Ordinal);
+
+        if (visibleTextStart < 0)
+        {
+            return false;
+        }
+
+        var sourceCaretIndex =
+            visibleTextStart + caretIndex;
+
+        var originalMarginV = source.MarginV;
+        var originalLineCount = GetPlainLineCount(source.Text);
+
+        // Beta 23's SplitManager already provides the behaviour we need here:
+        // proportional timing based on text length, configured minimum gap,
+        // tag handling and automatic breaking of overlong split halves.
+        var splitManager = new SplitManager();
+        splitManager.Split(
+            subtitles,
+            source,
+            sourceCaretIndex,
+            string.Empty);
+
+        if (sourceIndex + 1 >= subtitles.Count)
+        {
+            return false;
+        }
+
+        var newSubtitle = subtitles[sourceIndex + 1];
+
+        if (ReferenceEquals(newSubtitle, source))
+        {
+            return false;
+        }
+
+        if (_vm.IsFormatEbu)
+        {
+            // Both halves must obey the same Teletext rule set as the normal
+            // EBU editor: max two lines, 37 chars without colour and 36 with
+            // colour. Rebalance before timing so CPS uses the final text.
+            RebalanceTeletextSubtitle(source);
+            RebalanceTeletextSubtitle(newSubtitle);
+        }
+
+        RedistributeSplitTiming(
+            source,
+            newSubtitle,
+            originalStartMs,
+            originalEndMs);
+
+        RenumberSubtitles();
+
+        if (_vm.IsFormatEbu)
+        {
+            AdjustTeletextRowAfterSplit(
+                source,
+                originalMarginV,
+                originalLineCount);
+
+            AdjustTeletextRowAfterSplit(
+                newSubtitle,
+                originalMarginV,
+                originalLineCount);
+        }
+
+        _pendingFocusSource = newSubtitle;
+        _pendingFocusAtStart = true;
+
+        _vm.SelectedSubtitle = newSubtitle;
+
+        Refresh();
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            var targetItem =
+                _items.FirstOrDefault(
+                    x => ReferenceEquals(
+                        x.Source,
+                        newSubtitle));
+
+            if (targetItem != null)
+            {
+                FocusTextBox(
+                    targetItem,
+                    focusAtStart: true);
+            }
+
+            CenterSelectedSubtitleInFlow();
+        });
+
+        return true;
+    }
+
+    private static bool IsValidTeletextVisibleText(
+        string text,
+        int maxCharacters)
+    {
+        var normalized =
+            text.Replace(
+                "\r\n",
+                "\n",
+                StringComparison.Ordinal)
+                .Replace(
+                    '\r',
+                    '\n');
+
+        var lines =
+            normalized
+                .Split('\n')
+                .Where(line => line.Length > 0)
+                .ToArray();
+
+        return
+            lines.Length >= 1 &&
+            lines.Length <= 2 &&
+            lines.All(
+                line => line.Length <= maxCharacters);
+    }
+
+    private static void RebalanceTeletextSubtitle(
+        SubtitleLineViewModel subtitle)
+    {
+        var parsed =
+            FlowTextParser.Parse(
+                subtitle.Text);
+
+        var maxCharacters =
+            string.IsNullOrWhiteSpace(
+                parsed.ColorToken)
+                ? 37
+                : 36;
+
+        var rebalanced =
+            RebalanceTeletextVisibleText(
+                parsed.Text,
+                maxCharacters);
+
+        if (rebalanced == parsed.Text)
+        {
+            return;
+        }
+
+        subtitle.Text =
+            FlowTextParser.ApplyEditedText(
+                subtitle.Text,
+                rebalanced);
+    }
+
+    private static string RebalanceTeletextVisibleText(
+        string text,
+        int maxCharacters)
+    {
+        if (maxCharacters <= 0)
+        {
+            return text;
+        }
+
+        var normalized =
+            text.Replace(
+                "\r\n",
+                "\n",
+                StringComparison.Ordinal)
+                .Replace(
+                    '\r',
+                    '\n');
+
+        var existingLines =
+            normalized
+                .Split('\n')
+                .Select(line => line.Trim())
+                .ToList();
+
+        // A split may leave a leading/trailing empty line (for example when
+        // the caret was directly beside an existing line break). Teletext must
+        // count only real text rows, otherwise a one-line result incorrectly
+        // remains on the two-line TT position.
+        while (existingLines.Count > 0 &&
+               existingLines[0].Length == 0)
+        {
+            existingLines.RemoveAt(0);
+        }
+
+        while (existingLines.Count > 0 &&
+               existingLines[^1].Length == 0)
+        {
+            existingLines.RemoveAt(
+                existingLines.Count - 1);
+        }
+
+        normalized =
+            string.Join(
+                Environment.NewLine,
+                existingLines);
+
+        if (existingLines.Count <= 2 &&
+            existingLines.All(
+                line => line.Length <= maxCharacters))
+        {
+            return normalized;
+        }
+
+        // Rebalance only the visible text. Colour tags are restored afterwards
+        // by FlowTextParser.ApplyEditedText.
+        var words =
+            normalized
+                .Split(
+                    new[] { ' ', '\t', '\n' },
+                    StringSplitOptions.RemoveEmptyEntries);
+
+        if (words.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var flattened =
+            string.Join(
+                " ",
+                words);
+
+        if (flattened.Length <= maxCharacters)
+        {
+            return flattened;
+        }
+
+        // Find the best word boundary that keeps both lines within the current
+        // Teletext width (37 without colour, 36 with colour). Prefer the most
+        // balanced split.
+        var bestSplit = -1;
+        var bestDifference = int.MaxValue;
+
+        for (var i = 1; i < words.Length; i++)
+        {
+            var first =
+                string.Join(
+                    " ",
+                    words.Take(i));
+
+            var second =
+                string.Join(
+                    " ",
+                    words.Skip(i));
+
+            if (first.Length > maxCharacters ||
+                second.Length > maxCharacters)
+            {
+                continue;
+            }
+
+            var difference =
+                Math.Abs(
+                    first.Length -
+                    second.Length);
+
+            if (difference < bestDifference)
+            {
+                bestDifference = difference;
+                bestSplit = i;
+            }
+        }
+
+        if (bestSplit > 0)
+        {
+            return
+                string.Join(
+                    " ",
+                    words.Take(bestSplit)) +
+                Environment.NewLine +
+                string.Join(
+                    " ",
+                    words.Skip(bestSplit));
+        }
+
+        // If no word-boundary split can satisfy the limit, keep a strict
+        // two-line Teletext result by using the last possible boundary in the
+        // first maxCharacters characters. This only splits a word when there
+        // is no legal word-boundary alternative.
+        if (flattened.Length <= maxCharacters * 2)
+        {
+            var splitIndex =
+                Math.Min(
+                    maxCharacters,
+                    flattened.Length);
+
+            var preferredSpace =
+                flattened.LastIndexOf(
+                    ' ',
+                    splitIndex - 1,
+                    splitIndex);
+
+            if (preferredSpace > 0)
+            {
+                splitIndex =
+                    preferredSpace;
+            }
+
+            var first =
+                flattened[..splitIndex]
+                    .TrimEnd();
+
+            var second =
+                flattened[splitIndex..]
+                    .TrimStart();
+
+            if (first.Length <= maxCharacters &&
+                second.Length <= maxCharacters)
+            {
+                return
+                    first +
+                    Environment.NewLine +
+                    second;
+            }
+
+            // Absolute fallback for a single overlong word.
+            first =
+                flattened[..maxCharacters];
+
+            second =
+                flattened[maxCharacters..];
+
+            if (second.Length <= maxCharacters)
+            {
+                return
+                    first +
+                    Environment.NewLine +
+                    second;
+            }
+        }
+
+        // More than two legal Teletext lines are required. Auto-flow will later
+        // turn this into additional subtitles; until then do not silently lose
+        // or truncate text.
+        return normalized;
+    }
+
+    private static void RedistributeSplitTiming(
+        SubtitleLineViewModel first,
+        SubtitleLineViewModel second,
+        double originalStartMs,
+        double originalEndMs)
+    {
+        var totalDurationMs =
+            Math.Max(
+                2.0,
+                originalEndMs - originalStartMs);
+
+        var configuredGapMs =
+            Math.Max(
+                0.0,
+                Se.Settings.General.MinimumBetweenLines
+                    .GetMilliseconds());
+
+        // Never let the gap consume the entire original subtitle window.
+        var gapMs =
+            Math.Min(
+                configuredGapMs,
+                Math.Max(0.0, totalDurationMs - 2.0));
+
+        var availableMs =
+            Math.Max(
+                2.0,
+                totalDurationMs - gapMs);
+
+        var firstCharacters =
+            Math.Max(
+                1,
+                CountCharactersWithoutLineBreaks(
+                    FlowTextParser.Parse(first.Text).Text));
+
+        var secondCharacters =
+            Math.Max(
+                1,
+                CountCharactersWithoutLineBreaks(
+                    FlowTextParser.Parse(second.Text).Text));
+
+        var totalCharacters =
+            firstCharacters + secondCharacters;
+
+        var maxCps =
+            Se.Settings.General
+                .SubtitleMaximumCharactersPerSeconds;
+
+        var minimumDisplayMs =
+            Math.Max(
+                1.0,
+                Se.Settings.General
+                    .SubtitleMinimumDisplayMilliseconds);
+
+        var firstCpsMinimumMs =
+            maxCps > 0
+                ? firstCharacters / maxCps * 1000.0
+                : 0.0;
+
+        var secondCpsMinimumMs =
+            maxCps > 0
+                ? secondCharacters / maxCps * 1000.0
+                : 0.0;
+
+        var firstMinimumMs =
+            Math.Max(
+                minimumDisplayMs,
+                firstCpsMinimumMs);
+
+        var secondMinimumMs =
+            Math.Max(
+                minimumDisplayMs,
+                secondCpsMinimumMs);
+
+        double firstDurationMs;
+        double secondDurationMs;
+
+        if (firstMinimumMs + secondMinimumMs <= availableMs)
+        {
+            // Start with a text-proportional split of the original usable time.
+            firstDurationMs =
+                availableMs *
+                firstCharacters /
+                totalCharacters;
+
+            secondDurationMs =
+                availableMs - firstDurationMs;
+
+            // Respect CPS and minimum display duration for both halves.
+            if (firstDurationMs < firstMinimumMs)
+            {
+                firstDurationMs = firstMinimumMs;
+                secondDurationMs =
+                    availableMs - firstDurationMs;
+            }
+
+            if (secondDurationMs < secondMinimumMs)
+            {
+                secondDurationMs = secondMinimumMs;
+                firstDurationMs =
+                    availableMs - secondDurationMs;
+            }
+        }
+        else
+        {
+            // The original subtitle simply has too little time to satisfy both
+            // configured minima. Keep the original time window and share the
+            // usable duration in proportion to the two required minima.
+            var requiredTotalMs =
+                firstMinimumMs + secondMinimumMs;
+
+            firstDurationMs =
+                availableMs *
+                firstMinimumMs /
+                requiredTotalMs;
+
+            secondDurationMs =
+                availableMs - firstDurationMs;
+        }
+
+        firstDurationMs =
+            Math.Max(
+                1.0,
+                firstDurationMs);
+
+        secondDurationMs =
+            Math.Max(
+                1.0,
+                secondDurationMs);
+
+        // Preserve the original outer time codes exactly and put the configured
+        // minimum gap between the two new subtitles.
+        var firstEndMs =
+            originalStartMs + firstDurationMs;
+
+        var secondStartMs =
+            firstEndMs + gapMs;
+
+        // Guard against rounding or an impossible very-short source subtitle.
+        if (secondStartMs >= originalEndMs)
+        {
+            secondStartMs =
+                Math.Max(
+                    originalStartMs + 1.0,
+                    originalEndMs - 1.0);
+
+            firstEndMs =
+                Math.Max(
+                    originalStartMs + 1.0,
+                    secondStartMs - gapMs);
+        }
+
+        first.EndTime =
+            TimeSpan.FromMilliseconds(firstEndMs);
+
+        second.SetStartTimeOnly(
+            TimeSpan.FromMilliseconds(secondStartMs));
+
+        second.EndTime =
+            TimeSpan.FromMilliseconds(originalEndMs);
+    }
+
+    private void RenumberSubtitles()
+    {
+        var number = 1;
+
+        foreach (var subtitle in _vm.Subtitles)
+        {
+            if (subtitle.IsReferenceOnly)
+            {
+                continue;
+            }
+
+            subtitle.Number = number;
+            number++;
+        }
+    }
+
+    private static void AdjustTeletextRowAfterSplit(
+        SubtitleLineViewModel subtitle,
+        string originalMarginV,
+        int originalLineCount)
+    {
+        var newLineCount =
+            GetPlainLineCount(subtitle.Text);
+
+        var newRow =
+            TeletextRowHelper.GetRowKeepingBottomEdge(
+                originalMarginV,
+                originalLineCount,
+                newLineCount,
+                Configuration.Settings.SubtitleSettings
+                    .EbuStlTeletextUseDoubleHeight);
+
+        if (newRow.HasValue)
+        {
+            subtitle.MarginV =
+                newRow.Value.ToString(
+                    CultureInfo.InvariantCulture);
+        }
     }
 
         private void TextBoxOnArrowKeyDown(
@@ -367,8 +1178,68 @@ public sealed class FlowEditingView : Border
             return false;
         }
 
+        var actualGapMs =
+            currentItem.Source.StartTime.TotalMilliseconds -
+            previous.EndTime.TotalMilliseconds;
+
+        var allowedGapMs =
+            Math.Max(
+                0.0,
+                Se.Settings.General.MinimumBetweenLines
+                    .GetMilliseconds());
+
+        // Flow Backspace removes a normal subtitle boundary. It must not absorb
+        // a deliberate larger timing gap into one long subtitle duration.
+        if (actualGapMs > allowedGapMs + 0.5)
+        {
+            ShowMergeGapWarning(
+                currentItem,
+                actualGapMs,
+                allowedGapMs);
+
+            // Return true so the Backspace key is consumed even though no merge
+            // took place. Both subtitles and their timing stay untouched.
+            return true;
+        }
+
+        var previousParsed =
+            FlowTextParser.Parse(previous.Text);
+
+        var currentParsed =
+            FlowTextParser.Parse(currentItem.Source.Text);
+
         var previousVisibleText =
-            FlowTextParser.Parse(previous.Text).Text;
+            previousParsed.Text;
+
+        if (_vm.IsFormatEbu)
+        {
+            var mergedVisibleText =
+                (previousParsed.Text.TrimEnd() + " " +
+                 currentParsed.Text.TrimStart()).Trim();
+
+            var hasColor =
+                !string.IsNullOrWhiteSpace(previousParsed.ColorToken) ||
+                !string.IsNullOrWhiteSpace(currentParsed.ColorToken);
+
+            var maxCharacters =
+                hasColor ? 36 : 37;
+
+            var rebalanced =
+                RebalanceTeletextVisibleText(
+                    mergedVisibleText,
+                    maxCharacters);
+
+            if (!IsValidTeletextVisibleText(
+                    rebalanced,
+                    maxCharacters))
+            {
+                ShowMergeTextTooLongWarning(
+                    currentItem,
+                    maxCharacters);
+
+                return true;
+            }
+        }
 
         var visibleCharactersBeforeJoin =
             CountCharactersWithoutLineBreaks(
@@ -452,6 +1323,78 @@ public sealed class FlowEditingView : Border
         });
 
         return true;
+    }
+
+    private void ShowMergeTextTooLongWarning(
+        FlowEditingItem item,
+        int maxCharacters)
+    {
+        if (!_textBoxes.TryGetValue(
+                item,
+                out var textBox))
+        {
+            return;
+        }
+
+        var message =
+            string.Format(
+                CultureInfo.InvariantCulture,
+                "Merge not possible – too many characters (max {0} per line)",
+                maxCharacters);
+
+        ToolTip.SetTip(
+            textBox,
+            message);
+
+        ToolTip.SetIsOpen(
+            textBox,
+            true);
+
+        DispatcherTimer.RunOnce(
+            () =>
+            {
+                ToolTip.SetIsOpen(
+                    textBox,
+                    false);
+            },
+            TimeSpan.FromSeconds(2.5));
+    }
+
+    private void ShowMergeGapWarning(
+        FlowEditingItem item,
+        double actualGapMs,
+        double allowedGapMs)
+    {
+        if (!_textBoxes.TryGetValue(
+                item,
+                out var textBox))
+        {
+            return;
+        }
+
+        var message =
+            string.Format(
+                CultureInfo.InvariantCulture,
+                "Gap too large to merge ({0:0.00} s; max {1:0.00} s)",
+                actualGapMs / 1000.0,
+                allowedGapMs / 1000.0);
+
+        ToolTip.SetTip(
+            textBox,
+            message);
+
+        ToolTip.SetIsOpen(
+            textBox,
+            true);
+
+        DispatcherTimer.RunOnce(
+            () =>
+            {
+                ToolTip.SetIsOpen(
+                    textBox,
+                    false);
+            },
+            TimeSpan.FromSeconds(2.5));
     }
 
     private void FocusMergedTextAtJoin(

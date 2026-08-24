@@ -14,36 +14,87 @@ public static partial class FlowTextParser
         "</?font\\b[^>]*>",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    private static readonly Regex AlignmentTagRegex = new(
+        "\\{\\\\an[1-9]\\}",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     public static FlowTextInfo Parse(string? text)
     {
         var source = text ?? string.Empty;
-        var match = FontColorRegex.Match(source);
-        var colorToken = match.Success ? match.Groups["color"].Value : null;
-        var cleanText = FontTagRegex.Replace(source, string.Empty);
-        return new FlowTextInfo(cleanText, colorToken, ToBrush(colorToken));
+
+        var colorMatch =
+            FontColorRegex.Match(source);
+
+        var colorToken =
+            colorMatch.Success
+                ? colorMatch.Groups["color"].Value
+                : null;
+
+        var alignmentMatch =
+            AlignmentTagRegex.Match(source);
+
+        var alignmentToken =
+            alignmentMatch.Success
+                ? alignmentMatch.Value
+                : null;
+
+        var cleanText =
+            FontTagRegex.Replace(
+                source,
+                string.Empty);
+
+        cleanText =
+            AlignmentTagRegex.Replace(
+                cleanText,
+                string.Empty);
+
+        return new FlowTextInfo(
+            cleanText,
+            colorToken,
+            ToBrush(colorToken),
+            alignmentToken);
     }
 
-    public static string ApplyEditedText(string? originalText, string editedText)
+    public static string ApplyEditedText(
+        string? originalText,
+        string editedText)
     {
-        var parsed = Parse(originalText);
-        if (string.IsNullOrWhiteSpace(parsed.ColorToken))
+        var parsed =
+            Parse(originalText);
+
+        var result =
+            editedText;
+
+        if (!string.IsNullOrWhiteSpace(
+                parsed.ColorToken))
         {
-            return editedText;
+            result =
+                $"<font color=\"{parsed.ColorToken}\">{result}</font>";
         }
 
-        return $"<font color=\"{parsed.ColorToken}\">{editedText}</font>";
+        if (!string.IsNullOrWhiteSpace(
+                parsed.AlignmentToken))
+        {
+            result =
+                parsed.AlignmentToken + result;
+        }
+
+        return result;
     }
 
-    private static IBrush? ToBrush(string? colorToken)
+    private static IBrush? ToBrush(
+        string? colorToken)
     {
-        if (string.IsNullOrWhiteSpace(colorToken))
+        if (string.IsNullOrWhiteSpace(
+                colorToken))
         {
             return null;
         }
 
         try
         {
-            return new SolidColorBrush(Color.Parse(colorToken));
+            return new SolidColorBrush(
+                Color.Parse(colorToken));
         }
         catch
         {
@@ -63,4 +114,8 @@ public static partial class FlowTextParser
     }
 }
 
-public sealed record FlowTextInfo(string Text, string? ColorToken, IBrush? Foreground);
+public sealed record FlowTextInfo(
+    string Text,
+    string? ColorToken,
+    IBrush? Foreground,
+    string? AlignmentToken);
