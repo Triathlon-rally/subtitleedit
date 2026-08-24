@@ -1564,13 +1564,21 @@ public static partial class InitListViewAndEditBox
             }
         };
 
-        var flowEditingButton = new Button
-        {
-            Content = "Flow",
-            Margin = new Thickness(8, 0, 0, 0),
-            Padding = new Thickness(8, 2),
-            VerticalAlignment = VerticalAlignment.Center,
-        };
+       var flowEditingButton = new Button
+{
+    Content = "Flow",
+    Margin = new Thickness(8, 0, 0, 0),
+    Padding = new Thickness(8, 2),
+    VerticalAlignment = VerticalAlignment.Center,
+};
+
+flowEditingButton.Bind(
+    Visual.IsVisibleProperty,
+    new Binding(nameof(vm.IsFormatEbu))
+    {
+        Source = vm,
+        Mode = BindingMode.OneWay,
+    });
         panelForTextLabel.Children.Add(flowEditingButton);
 
 
@@ -1592,41 +1600,79 @@ public static partial class InitListViewAndEditBox
             Mode = BindingMode.OneWay
         });
         textEditGrid.Children.Add(textCharsSecLabel);
-        var textEditor = MakeTextBox(vm);
-        var flowEditingView = new FlowEditingView(vm)
-        {
-            IsVisible = false,
-        };
-        var editorHost = new Grid();
-        editorHost.Children.Add(textEditor);
-        editorHost.Children.Add(flowEditingView);
-        textEditGrid.Children.Add(editorHost);
-        Grid.SetRow(editorHost, 1);
+  var textEditor = MakeTextBox(vm);
+var flowEditingView = new FlowEditingView(vm)
+{
+    IsVisible = false,
+};
 
-        GridLength? editRowHeightBeforeFlow = null;
-        flowEditingButton.Click += (_, _) =>
-        {
-            var activate = !flowEditingView.IsVisible;
-            flowEditingView.IsVisible = activate;
-            textEditor.IsVisible = !activate;
-            flowEditingButton.Content = activate ? "✓ Flow" : "Flow";
+var editorHost = new Grid();
+editorHost.Children.Add(textEditor);
+editorHost.Children.Add(flowEditingView);
+textEditGrid.Children.Add(editorHost);
+Grid.SetRow(editorHost, 1);
 
-            if (activate)
-            {
-                flowEditingView.Refresh();
-                if (!detachedEditBox && mainGrid.RowDefinitions.Count > 1)
-                {
-                    editRowHeightBeforeFlow = mainGrid.RowDefinitions[1].Height;
-                    var targetHeight = Math.Max(mainGrid.RowDefinitions[1].ActualHeight, 360);
-                    mainGrid.RowDefinitions[1].Height = new GridLength(targetHeight);
-                }
-            }
-            else if (!detachedEditBox && editRowHeightBeforeFlow.HasValue && mainGrid.RowDefinitions.Count > 1)
-            {
-                mainGrid.RowDefinitions[1].Height = editRowHeightBeforeFlow.Value;
-                editRowHeightBeforeFlow = null;
-            }
-        };
+GridLength? editRowHeightBeforeFlow = null;
+
+vm.PropertyChanged += (_, e) =>
+{
+    if (e.PropertyName == nameof(MainViewModel.IsFormatEbu) &&
+        !vm.IsFormatEbu &&
+        flowEditingView.IsVisible)
+    {
+        flowEditingView.IsVisible = false;
+        textEditor.IsVisible = true;
+        flowEditingButton.Content = "Flow";
+
+        if (!detachedEditBox &&
+            editRowHeightBeforeFlow.HasValue &&
+            mainGrid.RowDefinitions.Count > 1)
+        {
+            mainGrid.RowDefinitions[1].Height =
+                editRowHeightBeforeFlow.Value;
+
+            editRowHeightBeforeFlow = null;
+        }
+    }
+};
+
+flowEditingButton.Click += (_, _) =>
+{
+    var activate = !flowEditingView.IsVisible;
+    flowEditingView.IsVisible = activate;
+    textEditor.IsVisible = !activate;
+    flowEditingButton.Content = activate ? "✓ Flow" : "Flow";
+
+    if (activate)
+    {
+        flowEditingView.Refresh();
+
+        if (!detachedEditBox &&
+            mainGrid.RowDefinitions.Count > 1)
+        {
+            editRowHeightBeforeFlow =
+                mainGrid.RowDefinitions[1].Height;
+
+            var targetHeight =
+                Math.Max(
+                    mainGrid.RowDefinitions[1].ActualHeight,
+                    360);
+
+            mainGrid.RowDefinitions[1].Height =
+                new GridLength(targetHeight);
+        }
+    }
+    else if (!detachedEditBox &&
+             editRowHeightBeforeFlow.HasValue &&
+             mainGrid.RowDefinitions.Count > 1)
+    {
+        mainGrid.RowDefinitions[1].Height =
+            editRowHeightBeforeFlow.Value;
+
+        editRowHeightBeforeFlow = null;
+    }
+}; 
+ 
 
         var textTotalLengthLabel = new TextBlock
         {

@@ -166,7 +166,6 @@ public static class InitToolbar
             isLastSeparator = false;
         }
 
-
         if (!isLastSeparator)
         {
             stackPanelLeft.Children.Add(MakeSeparator());
@@ -290,7 +289,6 @@ public static class InitToolbar
             isLastSeparator = false;
         }
 
-
         if (appearance.ToolbarShowSettings)
         {
             stackPanelLeft.Children.Add(new Button
@@ -325,7 +323,10 @@ public static class InitToolbar
                 Command = vm.ShowSourceViewCommand,
                 Background = Brushes.Transparent,
                 [AutomationProperties.NameProperty] = Se.Language.Options.Shortcuts.SourceView,
-                [ToolTip.TipProperty] = UiUtil.MakeToolTip(Se.Language.Options.Shortcuts.SourceView + " {0}", shortcuts, nameof(vm.ShowSourceViewCommand)),
+                [ToolTip.TipProperty] = UiUtil.MakeToolTip(
+                    Se.Language.Options.Shortcuts.SourceView + " {0}",
+                    shortcuts,
+                    nameof(vm.ShowSourceViewCommand)),
             });
             isLastSeparator = false;
         }
@@ -352,11 +353,19 @@ public static class InitToolbar
         // The format specific icons below only appear for ASSA/SSA/WebVTT, and each one can be
         // hidden from settings just like the icons above. A format only gets its separator when
         // at least one of its own icons is still enabled.
-        var showAssaIcons = appearance.ToolbarShowStyleManager || appearance.ToolbarShowProperties ||
-                            appearance.ToolbarShowAttachments || appearance.ToolbarShowAssaDraw;
-        var showSsaIcons = appearance.ToolbarShowStyleManager || appearance.ToolbarShowProperties ||
-                           appearance.ToolbarShowAttachments;
-        var showWebVttIcons = appearance.ToolbarShowStyleManager;
+        var showAssaIcons =
+            appearance.ToolbarShowStyleManager ||
+            appearance.ToolbarShowProperties ||
+            appearance.ToolbarShowAttachments ||
+            appearance.ToolbarShowAssaDraw;
+
+        var showSsaIcons =
+            appearance.ToolbarShowStyleManager ||
+            appearance.ToolbarShowProperties ||
+            appearance.ToolbarShowAttachments;
+
+        var showWebVttIcons =
+            appearance.ToolbarShowStyleManager;
 
         if (!isLastSeparator)
         {
@@ -365,7 +374,12 @@ public static class InitToolbar
                 var assaSeparator = MakeSeparator();
                 stackPanelLeft.Children.Add(assaSeparator);
                 assaSeparator.DataContext = vm;
-                assaSeparator.Bind(Visual.IsVisibleProperty, new Binding(nameof(vm.IsFormatAssa)) { Mode = BindingMode.TwoWay });
+                assaSeparator.Bind(
+                    Visual.IsVisibleProperty,
+                    new Binding(nameof(vm.IsFormatAssa))
+                    {
+                        Mode = BindingMode.TwoWay,
+                    });
             }
 
             if (showSsaIcons)
@@ -373,7 +387,12 @@ public static class InitToolbar
                 var ssaSeparator = MakeSeparator();
                 stackPanelLeft.Children.Add(ssaSeparator);
                 ssaSeparator.DataContext = vm;
-                ssaSeparator.Bind(Visual.IsVisibleProperty, new Binding(nameof(vm.IsFormatSsa)) { Mode = BindingMode.TwoWay });
+                ssaSeparator.Bind(
+                    Visual.IsVisibleProperty,
+                    new Binding(nameof(vm.IsFormatSsa))
+                    {
+                        Mode = BindingMode.TwoWay,
+                    });
             }
 
             if (showWebVttIcons)
@@ -381,7 +400,12 @@ public static class InitToolbar
                 var webVttSeparator = MakeSeparator();
                 stackPanelLeft.Children.Add(webVttSeparator);
                 webVttSeparator.DataContext = vm;
-                webVttSeparator.Bind(Visual.IsVisibleProperty, new Binding(nameof(vm.IsFormatWebVtt)) { Mode = BindingMode.TwoWay });
+                webVttSeparator.Bind(
+                    Visual.IsVisibleProperty,
+                    new Binding(nameof(vm.IsFormatWebVtt))
+                    {
+                        Mode = BindingMode.TwoWay,
+                    });
             }
 
             isLastSeparator = true;
@@ -518,6 +542,30 @@ public static class InitToolbar
             VerticalAlignment = VerticalAlignment.Center,
         };
 
+        // EBU STL only: direct access to the existing header/export settings.
+        // It sits before the format selector so the selector itself stays in a stable position.
+        var ebuHeaderButton = new Button
+        {
+            Content = "Header",
+            Command = vm.ExportEbuStlCommand,
+            Background = Brushes.Transparent,
+            BorderBrush = Brushes.Gray,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(10, 4),
+            Margin = new Thickness(0, 0, 6, 0),
+            MinHeight = 32,
+            MinWidth = 68,
+            VerticalAlignment = VerticalAlignment.Center,
+            [AutomationProperties.NameProperty] = "EBU STL header",
+            [ToolTip.TipProperty] = "Open EBU STL header/export settings",
+            [!Visual.IsVisibleProperty] = new Binding(nameof(vm.IsFormatEbu))
+            {
+                Source = vm,
+                Mode = BindingMode.OneWay,
+            },
+        };
+        stackPanelRight.Children.Add(ebuHeaderButton);
+
         // subtitle formats
         stackPanelRight.Children.Add(new TextBlock
         {
@@ -525,6 +573,7 @@ public static class InitToolbar
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(5, 0, 3, 0),
         });
+
         var comboBoxSubtitleFormat = new ComboBox
         {
             Width = 200,
@@ -539,34 +588,19 @@ public static class InitToolbar
                     Width = 150,
                 }, true)
         };
+
         comboBoxSubtitleFormat.SelectionChanged += vm.ComboBoxSubtitleFormatChanged;
         comboBoxSubtitleFormat.KeyDown += vm.ComboBoxSubtitleFormatKeyDown;
+
         // Tunnel phase so we see the event before ComboBox consumes a left-click to open
         // its dropdown (matters for Mac Ctrl+Click, which Avalonia delivers as left+Ctrl).
-        comboBoxSubtitleFormat.AddHandler(InputElement.PointerPressedEvent,
+        comboBoxSubtitleFormat.AddHandler(
+            InputElement.PointerPressedEvent,
             vm.ComboBoxSubtitleFormatPointerPressed,
             RoutingStrategies.Tunnel,
             handledEventsToo: true);
+
         stackPanelRight.Children.Add(comboBoxSubtitleFormat);
-
-        // Direct access to the existing EBU STL header/export dialog.
-        // Match the format ComboBox visually and leave a small right-side margin.
-        stackPanelRight.Children.Add(new Button
-        {
-            Content = "Header",
-            Command = vm.ExportEbuStlCommand,
-            Background = Brushes.Transparent,
-            BorderBrush = Brushes.Gray,
-            BorderThickness = new Thickness(1),
-            Padding = new Thickness(10, 4),
-            Margin = new Thickness(6, 0, 4, 0),
-            MinHeight = 32,
-            MinWidth = 68,
-            VerticalAlignment = VerticalAlignment.Center,
-            [AutomationProperties.NameProperty] = "EBU STL header",
-            [ToolTip.TipProperty] = "Open EBU STL header/export settings",
-        });
-
         isLastSeparator = false;
 
         if (appearance.ToolbarShowEncoding)
@@ -577,6 +611,7 @@ public static class InitToolbar
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(5, 0, 3, 0),
             });
+
             var comboBoxEncoding = new ComboBox
             {
                 Width = 200,
@@ -585,6 +620,7 @@ public static class InitToolbar
                 [!ComboBox.SelectedItemProperty] = new Binding(nameof(vm.SelectedEncoding)),
                 DataContext = vm,
             };
+
             stackPanelRight.Children.Add(comboBoxEncoding);
         }
 
@@ -596,6 +632,7 @@ public static class InitToolbar
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(5, 0, 3, 0),
             });
+
             var comboBoxFrameRate = new ComboBox
             {
                 Width = 110,
@@ -604,6 +641,7 @@ public static class InitToolbar
                 [!ComboBox.SelectedItemProperty] = new Binding(nameof(vm.SelectedFrameRate)),
                 DataContext = vm,
             };
+
             stackPanelRight.Children.Add(comboBoxFrameRate);
             comboBoxFrameRate.SelectionChanged += vm.ComboBoxFrameRateSelectionChanged;
 
@@ -616,7 +654,9 @@ public static class InitToolbar
                 Background = Brushes.Transparent,
                 VerticalAlignment = VerticalAlignment.Center,
                 [AutomationProperties.NameProperty] = languageHints.GetFrameRateFromVideoFileHint,
-                [ToolTip.TipProperty] = UiUtil.MakeToolTip(languageHints.GetFrameRateFromVideoFileHint, shortcuts),
+                [ToolTip.TipProperty] = UiUtil.MakeToolTip(
+                    languageHints.GetFrameRateFromVideoFileHint,
+                    shortcuts),
             });
         }
 
@@ -624,12 +664,21 @@ public static class InitToolbar
         {
             RowDefinitions =
             {
-                new RowDefinition { Height = new GridLength(1, GridUnitType.Auto) },
-                new RowDefinition { Height = new GridLength(1, GridUnitType.Auto) },
+                new RowDefinition
+                {
+                    Height = new GridLength(1, GridUnitType.Auto),
+                },
+                new RowDefinition
+                {
+                    Height = new GridLength(1, GridUnitType.Auto),
+                },
             },
             ColumnDefinitions =
             {
-                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                new ColumnDefinition
+                {
+                    Width = new GridLength(1, GridUnitType.Star),
+                },
             },
             Width = double.NaN,
             HorizontalAlignment = HorizontalAlignment.Stretch,
@@ -649,8 +698,12 @@ public static class InitToolbar
             {
                 Setters =
                 {
-                    new Setter(Button.BorderThicknessProperty, new Thickness(0)),
-                    new Setter(Button.BorderBrushProperty, Brushes.Transparent),
+                    new Setter(
+                        Button.BorderThicknessProperty,
+                        new Thickness(0)),
+                    new Setter(
+                        Button.BorderBrushProperty,
+                        Brushes.Transparent),
                 },
             });
         }
@@ -667,7 +720,11 @@ public static class InitToolbar
             EnsureImagePath();
         }
 
-        var filePath = Path.Combine(_imagePath, image + ".png");
+        var filePath =
+            Path.Combine(
+                _imagePath,
+                image + ".png");
+
         try
         {
             return new Image
@@ -676,7 +733,8 @@ public static class InitToolbar
                 Stretch = Stretch.Uniform,
             };
         }
-        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
+        catch (Exception e)
+            when (e is FileNotFoundException or DirectoryNotFoundException)
         {
             // The unpacked theme folder can lag behind the app (an icon added between releases
             // without a version bump made every startup crash here, since version.txt said the
@@ -694,61 +752,110 @@ public static class InitToolbar
                 }
                 catch (Exception retryException)
                 {
-                    Se.LogError(retryException, $"Theme image \"{filePath}\" still missing after re-unpacking Themes.zip");
+                    Se.LogError(
+                        retryException,
+                        $"Theme image \"{filePath}\" still missing after re-unpacking Themes.zip");
                 }
             }
             else
             {
-                Se.LogError(e, $"Could not load theme image \"{filePath}\"");
+                Se.LogError(
+                    e,
+                    $"Could not load theme image \"{filePath}\"");
             }
 
-            return new Image { Stretch = Stretch.Uniform };
+            return new Image
+            {
+                Stretch = Stretch.Uniform,
+            };
         }
     }
 
     private static unsafe Bitmap MakeOneColor(string filePath)
     {
-        if (!UiTheme.IsDarkThemeEnabled() || !Se.Settings.Appearance.MatchIconColorToDarkTheme)
+        if (!UiTheme.IsDarkThemeEnabled() ||
+            !Se.Settings.Appearance.MatchIconColorToDarkTheme)
         {
             return new Bitmap(filePath);
         }
 
-        var foregroundColor = UiTheme.GetDarkThemeForegroundColor();
+        var foregroundColor =
+            UiTheme.GetDarkThemeForegroundColor();
 
-        using var decodedBitmap = SKBitmap.Decode(filePath);
-        using var skBitmap = decodedBitmap.ColorType == SKColorType.Bgra8888
-            ? decodedBitmap
-            : decodedBitmap.Copy(SKColorType.Bgra8888);
+        using var decodedBitmap =
+            SKBitmap.Decode(filePath);
+
+        using var skBitmap =
+            decodedBitmap.ColorType == SKColorType.Bgra8888
+                ? decodedBitmap
+                : decodedBitmap.Copy(SKColorType.Bgra8888);
 
         var width = skBitmap.Width;
         var height = skBitmap.Height;
-        var result = new SKBitmap(width, height, SKColorType.Bgra8888, SKAlphaType.Premul);
 
-        byte* srcBase = (byte*)skBitmap.GetPixels();
-        byte* dstBase = (byte*)result.GetPixels();
-        int srcStride = skBitmap.RowBytes;
-        int dstStride = result.RowBytes;
+        var result =
+            new SKBitmap(
+                width,
+                height,
+                SKColorType.Bgra8888,
+                SKAlphaType.Premul);
+
+        byte* srcBase =
+            (byte*)skBitmap.GetPixels();
+
+        byte* dstBase =
+            (byte*)result.GetPixels();
+
+        var srcStride =
+            skBitmap.RowBytes;
+
+        var dstStride =
+            result.RowBytes;
 
         for (var y = 0; y < height; y++)
         {
-            uint* srcRow = (uint*)(srcBase + y * srcStride);
-            uint* dstRow = (uint*)(dstBase + y * dstStride);
+            uint* srcRow =
+                (uint*)(srcBase + y * srcStride);
+
+            uint* dstRow =
+                (uint*)(dstBase + y * dstStride);
 
             for (var x = 0; x < width; x++)
             {
-                uint pixel = srcRow[x];
-                byte b = (byte)(pixel & 0xFF);
-                byte g = (byte)((pixel >> 8) & 0xFF);
-                byte r = (byte)((pixel >> 16) & 0xFF);
-                byte a = (byte)(pixel >> 24);
+                var pixel =
+                    srcRow[x];
 
-                var intensity = (r * 0.299 + g * 0.587 + b * 0.114) / 255.0;
+                var b =
+                    (byte)(pixel & 0xFF);
 
-                byte newR = (byte)(foregroundColor.R * intensity);
-                byte newG = (byte)(foregroundColor.G * intensity);
-                byte newB = (byte)(foregroundColor.B * intensity);
+                var g =
+                    (byte)((pixel >> 8) & 0xFF);
 
-                dstRow[x] = (uint)(a << 24) | (uint)(newR << 16) | (uint)(newG << 8) | newB;
+                var r =
+                    (byte)((pixel >> 16) & 0xFF);
+
+                var a =
+                    (byte)(pixel >> 24);
+
+                var intensity =
+                    (r * 0.299 +
+                     g * 0.587 +
+                     b * 0.114) / 255.0;
+
+                var newR =
+                    (byte)(foregroundColor.R * intensity);
+
+                var newG =
+                    (byte)(foregroundColor.G * intensity);
+
+                var newB =
+                    (byte)(foregroundColor.B * intensity);
+
+                dstRow[x] =
+                    (uint)(a << 24) |
+                    (uint)(newR << 16) |
+                    (uint)(newG << 8) |
+                    newB;
             }
         }
 
