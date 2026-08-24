@@ -8,6 +8,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Data;
 using Avalonia.Input;
+using Avalonia.Input.Platform;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
@@ -24,6 +25,7 @@ public sealed class FlowEditingView : Border
     private const double FlowFontSizeIncrease = 2.0;
 
     private readonly MainViewModel _vm;
+    private readonly FlowPasteManager _pasteManager = new();
     private readonly StackPanel _itemsPanel;
     private readonly ScrollViewer _scrollViewer;
 
@@ -202,6 +204,13 @@ public sealed class FlowEditingView : Border
             (_, _) => SelectItem(item),
             Avalonia.Interactivity.RoutingStrategies.Tunnel);
 
+        // Flow paste is handled before the TextBox inserts raw clipboard text.
+        textBox.AddHandler(
+            InputElement.KeyDownEvent,
+            async (_, e) => await TextBoxOnPasteKeyDownAsync(item, textBox, e),
+            Avalonia.Interactivity.RoutingStrategies.Tunnel,
+            handledEventsToo: true);
+
         // Return must be handled before the TextBox inserts a third line.
         textBox.AddHandler(
             InputElement.KeyDownEvent,
@@ -290,6 +299,258 @@ public sealed class FlowEditingView : Border
                     160,
                     160))
             : Brushes.Transparent;
+    }
+
+    private async System.Threading.Tasks.Task TextBoxOnPasteKeyDownAsync(
+        FlowEditingItem item,
+        TextBox textBox,
+        KeyEventArgs e)
+    {
+        var isPaste =
+            e.Key == Key.V &&
+            (e.KeyModifiers.HasFlag(KeyModifiers.Meta) ||
+             e.KeyModifiers.HasFlag(KeyModifiers.Control));
+
+        if (!isPaste)
+        {
+            return;
+        }
+
+        // First safe Flow-paste version: only intercept paste at the very end
+        // of the final subtitle. Everywhere else the normal TextBox paste is
+        // left untouched until the insertion-window logic is added.
+        var subtitles = _vm.Subtitles;
+        var sourceIndex = subtitles.IndexOf(item.Source);
+
+        if (sourceIndex < 0 ||
+            sourceIndex != subtitles.Count - 1 ||
+            textBox.SelectionStart != textBox.SelectionEnd ||
+            textBox.CaretIndex < (textBox.Text ?? string.Empty).Length)
+        {
+            return;
+        }
+
+        var clipboard =
+            TopLevel.GetTopLevel(this)?.Clipboard;
+
+        if (clipboard == null)
+        {
+            return;
+        }
+
+        var clipboardText =
+            await clipboard.TryGetTextAsync();
+
+        if (string.IsNullOrWhiteSpace(clipboardText))
+        {
+            return;
+        }
+
+        // We own this paste now; raw text must not also be inserted by TextBox.
+        e.Handled = true;
+
+        var parsedSource =
+            FlowTextParser.Parse(item.Source.Text);
+
+        // Plain text pasted into EBU STL always receives an explicit yellow
+        // Teletext colour code. Therefore the paste planner must use the
+        // stricter 36-character line limit from the start.
+        var hasColor =
+            _vm.IsFormatEbu ||
+            !string.IsNullOrWhiteSpace(parsedSource.ColorToken);
+
+        var gapMs =
+            Math.Max(
+                0.0,
+                Se.Settings.General.MinimumBetweenLines
+                    .GetMilliseconds());
+
+        var insertionStart =
+            item.Source.EndTime +
+            TimeSpan.FromMilliseconds(gapMs);
+
+        var plan =
+            _pasteManager.BuildPlan(
+                clipboardText,
+                insertionStart,
+                nextExistingSubtitleStart: null,
+                hasColor);
+
+        if (!plan.Success)
+        {
+            ShowPasteWarning(
+                item,
+                plan.ErrorMessage ??
+                "Paste not possible.");
+
+            return;
+        }
+
+        if (plan.Items.Count == 0)
+        {
+            return;
+        }
+
+        InsertPastePlanAfter(
+            item,
+            plan);
+    }
+
+    private void InsertPastePlanAfter(
+        FlowEditingItem currentItem,
+        FlowPastePlan plan)
+    {
+        var subtitles = _vm.Subtitles;
+        var sourceIndex =
+            subtitles.IndexOf(currentItem.Source);
+
+        if (sourceIndex < 0)
+        {
+            return;
+        }
+
+        var insertIndex =
+            sourceIndex + 1;
+
+        SubtitleLineViewModel? lastInserted =
+            null;
+
+        foreach (var pasteItem in plan.Items)
+        {
+            var newSubtitle =
+                new SubtitleLineViewModel(
+                    currentItem.Source,
+                    generateNewId: true)
+                {
+                    Text = pasteItem.Text,
+                };
+
+            if (_vm.IsFormatEbu)
+            {
+                // Plain text pasted into EBU STL gets an explicit yellow colour
+                // code so the operator can immediately see that a real
+                // Teletext colour code is present. Do not inherit the previous
+                // speaker colour. Horizontal alignment is preserved.
+                var parsedSource =
+                    FlowTextParser.Parse(
+                        currentItem.Source.Text);
+
+                var visibleText =
+                    pasteItem.Text;
+
+                var taggedText =
+                    $"<font color=\"yellow\">{visibleText}</font>";
+
+                if (!string.IsNullOrWhiteSpace(
+                        parsedSource.AlignmentToken))
+                {
+                    taggedText =
+                        parsedSource.AlignmentToken +
+                        taggedText;
+                }
+
+                newSubtitle.Text =
+                    taggedText;
+
+                var targetLineCount =
+                    GetPlainLineCount(
+                        newSubtitle.Text);
+
+                var newRow =
+                    TeletextRowHelper.GetRowKeepingBottomEdge(
+                        currentItem.Source.MarginV,
+                        GetPlainLineCount(currentItem.Source.Text),
+                        targetLineCount,
+                        Configuration.Settings.SubtitleSettings
+                            .EbuStlTeletextUseDoubleHeight);
+
+                if (newRow.HasValue)
+                {
+                    newSubtitle.MarginV =
+                        newRow.Value.ToString(
+                            CultureInfo.InvariantCulture);
+                }
+            }
+
+            newSubtitle.SetStartTimeOnly(
+                pasteItem.StartTime);
+
+            newSubtitle.EndTime =
+                pasteItem.EndTime;
+
+            subtitles.Insert(
+                insertIndex,
+                newSubtitle);
+
+            insertIndex++;
+            lastInserted =
+                newSubtitle;
+        }
+
+        RenumberSubtitles();
+
+        if (lastInserted == null)
+        {
+            return;
+        }
+
+        _pendingFocusSource =
+            lastInserted;
+
+        _pendingFocusAtStart =
+            false;
+
+        _vm.SelectedSubtitle =
+            lastInserted;
+
+        Refresh();
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            var targetItem =
+                _items.FirstOrDefault(
+                    x => ReferenceEquals(
+                        x.Source,
+                        lastInserted));
+
+            if (targetItem != null)
+            {
+                FocusTextBox(
+                    targetItem,
+                    focusAtStart: false);
+            }
+
+            CenterSelectedSubtitleInFlow();
+        });
+    }
+
+    private void ShowPasteWarning(
+        FlowEditingItem item,
+        string message)
+    {
+        if (!_textBoxes.TryGetValue(
+                item,
+                out var textBox))
+        {
+            return;
+        }
+
+        ToolTip.SetTip(
+            textBox,
+            message);
+
+        ToolTip.SetIsOpen(
+            textBox,
+            true);
+
+        DispatcherTimer.RunOnce(
+            () =>
+            {
+                ToolTip.SetIsOpen(
+                    textBox,
+                    false);
+            },
+            TimeSpan.FromSeconds(3.0));
     }
 
     private void TextBoxOnReturnKeyDown(
