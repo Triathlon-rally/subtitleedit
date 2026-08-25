@@ -15,6 +15,7 @@ using Avalonia.Threading;
 using Nikse.SubtitleEdit.Controls;
 using Nikse.SubtitleEdit.Features.Options.Settings;
 using Nikse.SubtitleEdit.Features.Main.FlowEditing;
+using Nikse.SubtitleEdit.Features.Shared;
 using Nikse.SubtitleEdit.Features.Shared.TextBoxUtils;
 using Nikse.SubtitleEdit.Logic;
 using Nikse.SubtitleEdit.Logic.Config;
@@ -1490,6 +1491,658 @@ public static partial class InitListViewAndEditBox
         Grid.SetColumn(timeControlsPanel, 0);
         editGrid.Children.Add(timeControlsPanel);
 
+        // Flow-specific timing panel. The normal Subtitle Edit timing panel is
+        // left unchanged and is shown again whenever Flow is disabled.
+        var flowTimingPanel = new StackPanel
+        {
+            Spacing = 5,
+            Margin = new Thickness(0, 15, 10, 0),
+            VerticalAlignment = VerticalAlignment.Top,
+            IsVisible = false,
+            MinWidth = 165,
+        };
+
+        var flowGapBeforeLabel = new TextBlock
+        {
+            Text = "Gap before",
+            FontWeight = FontWeight.Bold,
+        };
+
+        var flowGapBeforeUpDown = new TimeCodeUpDown
+        {
+            DataContext = vm,
+            [AutomationProperties.NameProperty] = "Gap before",
+            IsEnabled = false,
+        };
+
+        var flowGapBeforeEmpty = new Border
+        {
+            BorderBrush = Brushes.Gray,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(2),
+            MinHeight = 28,
+            IsVisible = true,
+        };
+
+        flowTimingPanel.Children.Add(flowGapBeforeLabel);
+
+        var flowGapBeforeHost = new Grid();
+        flowGapBeforeHost.Children.Add(flowGapBeforeEmpty);
+        flowGapBeforeHost.Children.Add(flowGapBeforeUpDown);
+        flowTimingPanel.Children.Add(flowGapBeforeHost);
+        flowTimingPanel.Children.Add(new Separator
+        {
+            Margin = new Thickness(0, 2, 0, 2),
+        });
+
+        var flowShowLabel = new TextBlock
+        {
+            Text = Se.Language.General.Show,
+            FontWeight = FontWeight.Bold,
+        };
+
+        var flowShowUpDown = new TimeCodeUpDown
+        {
+            DataContext = vm,
+            UseVideoOffset = true,
+            [AutomationProperties.NameProperty] = Se.Language.General.StartTime,
+        };
+
+        flowShowUpDown[!TimeCodeUpDown.ValueProperty] =
+            new Binding(
+                $"{nameof(vm.SelectedSubtitle)}.{nameof(SubtitleLineViewModel.StartTimeOnly)}")
+            {
+                Mode = BindingMode.TwoWay,
+            };
+
+        flowShowUpDown.Bind(
+            TimeCodeUpDown.IsEnabledProperty,
+            new Binding(nameof(vm.AreTimeCodesEditable))
+            {
+                Source = vm,
+                Mode = BindingMode.OneWay,
+            });
+
+        flowShowUpDown.ValueChanged +=
+            vm.StartTimeChanged;
+
+        var flowHideLabel = new TextBlock
+        {
+            Text = Se.Language.General.Hide,
+            FontWeight = FontWeight.Bold,
+        };
+
+        var flowHideUpDown = new TimeCodeUpDown
+        {
+            DataContext = vm,
+            [AutomationProperties.NameProperty] = Se.Language.General.EndTime,
+        };
+
+        flowHideUpDown[!TimeCodeUpDown.ValueProperty] =
+            new Binding(
+                $"{nameof(vm.SelectedSubtitle)}.{nameof(SubtitleLineViewModel.EndTime)}")
+            {
+                Mode = BindingMode.TwoWay,
+            };
+
+        flowHideUpDown.Bind(
+            TimeCodeUpDown.IsEnabledProperty,
+            new Binding(nameof(vm.AreTimeCodesEditable))
+            {
+                Source = vm,
+                Mode = BindingMode.OneWay,
+            });
+
+        flowHideUpDown.ValueChanged +=
+            vm.EndTimeChanged;
+
+        var flowDurationLabel = new TextBlock
+        {
+            Text = Se.Language.General.Duration,
+            FontWeight = FontWeight.Bold,
+        };
+
+        var flowDurationUpDown = new SecondsUpDown
+        {
+            DataContext = vm,
+            [AutomationProperties.NameProperty] = Se.Language.General.Duration,
+            [!SecondsUpDown.ValueProperty] =
+                new Binding(
+                    $"{nameof(vm.SelectedSubtitle)}.{nameof(SubtitleLineViewModel.Duration)}")
+                {
+                    Mode = BindingMode.TwoWay,
+                },
+            [!SecondsUpDown.BackgroundProperty] =
+                new Binding(
+                    $"{nameof(vm.SelectedSubtitle)}.{nameof(SubtitleLineViewModel.DurationBackgroundBrush)}"),
+        };
+
+        flowDurationUpDown.Bind(
+            SecondsUpDown.IsEnabledProperty,
+            new Binding(nameof(vm.AreTimeCodesEditable))
+            {
+                Source = vm,
+                Mode = BindingMode.OneWay,
+            });
+
+        flowDurationUpDown.ValueChanged +=
+            (_, _) =>
+            {
+                vm.DurationChanged();
+            };
+
+        flowTimingPanel.Children.Add(flowShowLabel);
+        flowTimingPanel.Children.Add(flowShowUpDown);
+        flowTimingPanel.Children.Add(flowHideLabel);
+        flowTimingPanel.Children.Add(flowHideUpDown);
+        flowTimingPanel.Children.Add(flowDurationLabel);
+        flowTimingPanel.Children.Add(flowDurationUpDown);
+
+        flowTimingPanel.Children.Add(new Separator
+        {
+            Margin = new Thickness(0, 2, 0, 2),
+        });
+
+        var flowGapAfterLabel = new TextBlock
+        {
+            Text = "Gap after",
+            FontWeight = FontWeight.Bold,
+        };
+
+        var flowGapAfterUpDown = new TimeCodeUpDown
+        {
+            DataContext = vm,
+            [AutomationProperties.NameProperty] = "Gap after",
+            IsEnabled = false,
+        };
+
+        var flowGapAfterEmpty = new Border
+        {
+            BorderBrush = Brushes.Gray,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(2),
+            MinHeight = 28,
+            IsVisible = true,
+        };
+
+        flowTimingPanel.Children.Add(flowGapAfterLabel);
+
+        var flowGapAfterHost = new Grid();
+        flowGapAfterHost.Children.Add(flowGapAfterEmpty);
+        flowGapAfterHost.Children.Add(flowGapAfterUpDown);
+        flowTimingPanel.Children.Add(flowGapAfterHost);
+
+        var updatingFlowGapControls =
+            false;
+
+        string FormatFlowGapForConfirmation(
+            TimeSpan gap)
+        {
+            var frameRate =
+                Se.Settings.General.CurrentFrameRate;
+
+            if (frameRate <= 0)
+            {
+                frameRate =
+                    Se.Settings.General.DefaultFrameRate;
+            }
+
+            if (frameRate <= 0)
+            {
+                return gap.ToString(
+                    @"hh\:mm\:ss\.fff",
+                    System.Globalization.CultureInfo.InvariantCulture);
+            }
+
+            var totalSeconds =
+                Math.Max(
+                    0.0,
+                    gap.TotalSeconds);
+
+            var wholeSeconds =
+                (long)Math.Floor(
+                    totalSeconds);
+
+            var fraction =
+                totalSeconds -
+                wholeSeconds;
+
+            var frame =
+                (int)Math.Round(
+                    fraction * frameRate,
+                    MidpointRounding.AwayFromZero);
+
+            var nominalFrameCount =
+                Math.Max(
+                    1,
+                    (int)Math.Round(
+                        frameRate));
+
+            if (frame >= nominalFrameCount)
+            {
+                wholeSeconds++;
+                frame = 0;
+            }
+
+            var hours =
+                wholeSeconds / 3600;
+
+            var minutes =
+                (wholeSeconds % 3600) / 60;
+
+            var seconds =
+                wholeSeconds % 60;
+
+            return string.Format(
+                System.Globalization.CultureInfo.InvariantCulture,
+                "{0:00}:{1:00}:{2:00}:{3:00}",
+                hours,
+                minutes,
+                seconds,
+                frame);
+        }
+
+        void ShiftFlowSubtitles(
+            int firstIndex,
+            TimeSpan shift)
+        {
+            if (shift == TimeSpan.Zero ||
+                firstIndex < 0 ||
+                firstIndex >= vm.Subtitles.Count)
+            {
+                return;
+            }
+
+            for (var i = firstIndex;
+                 i < vm.Subtitles.Count;
+                 i++)
+            {
+                var subtitle =
+                    vm.Subtitles[i];
+
+                if (subtitle.IsReferenceOnly)
+                {
+                    continue;
+                }
+
+                var oldStart =
+                    subtitle.StartTime;
+
+                var oldEnd =
+                    subtitle.EndTime;
+
+                subtitle.StartTime =
+                    oldStart + shift;
+
+                subtitle.EndTime =
+                    oldEnd + shift;
+            }
+        }
+
+        void RefreshFlowGapDisplay()
+        {
+            var selected =
+                vm.SelectedSubtitle;
+
+            updatingFlowGapControls = true;
+
+            try
+            {
+                if (selected == null)
+                {
+                    flowGapBeforeUpDown.IsEnabled =
+                        false;
+
+                    flowGapAfterUpDown.IsEnabled =
+                        false;
+
+                    flowGapBeforeUpDown.IsVisible =
+                        false;
+
+                    flowGapAfterUpDown.IsVisible =
+                        false;
+
+                    flowGapBeforeEmpty.IsVisible =
+                        true;
+
+                    flowGapAfterEmpty.IsVisible =
+                        true;
+
+                    return;
+                }
+
+                var selectedIndex =
+                    vm.Subtitles.IndexOf(
+                        selected);
+
+                if (selectedIndex > 0)
+                {
+                    var previous =
+                        vm.Subtitles[
+                            selectedIndex - 1];
+
+                    var gapBefore =
+                        selected.StartTime -
+                        previous.EndTime;
+
+                    flowGapBeforeUpDown.Value =
+                        gapBefore < TimeSpan.Zero
+                            ? TimeSpan.Zero
+                            : gapBefore;
+
+                    flowGapBeforeUpDown.IsEnabled =
+                        vm.AreTimeCodesEditable;
+
+                    flowGapBeforeUpDown.IsVisible =
+                        true;
+
+                    flowGapBeforeEmpty.IsVisible =
+                        false;
+                }
+                else
+                {
+                    flowGapBeforeUpDown.IsEnabled =
+                        false;
+
+                    flowGapBeforeUpDown.IsVisible =
+                        false;
+
+                    flowGapBeforeEmpty.IsVisible =
+                        true;
+                }
+
+                if (selectedIndex >= 0 &&
+                    selectedIndex <
+                    vm.Subtitles.Count - 1)
+                {
+                    var next =
+                        vm.Subtitles[
+                            selectedIndex + 1];
+
+                    var gapAfter =
+                        next.StartTime -
+                        selected.EndTime;
+
+                    flowGapAfterUpDown.Value =
+                        gapAfter < TimeSpan.Zero
+                            ? TimeSpan.Zero
+                            : gapAfter;
+
+                    flowGapAfterUpDown.IsEnabled =
+                        vm.AreTimeCodesEditable;
+
+                    flowGapAfterUpDown.IsVisible =
+                        true;
+
+                    flowGapAfterEmpty.IsVisible =
+                        false;
+                }
+                else
+                {
+                    flowGapAfterUpDown.IsEnabled =
+                        false;
+
+                    flowGapAfterUpDown.IsVisible =
+                        false;
+
+                    flowGapAfterEmpty.IsVisible =
+                        true;
+                }
+            }
+            finally
+            {
+                updatingFlowGapControls = false;
+            }
+        }
+
+        flowGapBeforeUpDown.ValueChanged +=
+            async (_, _) =>
+            {
+                if (updatingFlowGapControls)
+                {
+                    return;
+                }
+
+                var selected =
+                    vm.SelectedSubtitle;
+
+                if (selected == null)
+                {
+                    return;
+                }
+
+                var selectedIndex =
+                    vm.Subtitles.IndexOf(
+                        selected);
+
+                if (selectedIndex <= 0)
+                {
+                    return;
+                }
+
+                var previous =
+                    vm.Subtitles[
+                        selectedIndex - 1];
+
+                var oldGap =
+                    selected.StartTime -
+                    previous.EndTime;
+
+                var newGap =
+                    flowGapBeforeUpDown.Value;
+
+                if (newGap < TimeSpan.Zero)
+                {
+                    newGap = TimeSpan.Zero;
+                }
+
+                var shift =
+                    newGap -
+                    oldGap;
+
+                if (shift == TimeSpan.Zero)
+                {
+                    return;
+                }
+
+                var affectedCount =
+                    vm.Subtitles
+                        .Skip(selectedIndex)
+                        .Count(
+                            subtitle =>
+                                !subtitle.IsReferenceOnly);
+
+                var owner =
+                    TopLevel.GetTopLevel(
+                        flowGapBeforeUpDown)
+                    as Window;
+
+                if (owner == null)
+                {
+                    RefreshFlowGapDisplay();
+                    return;
+                }
+
+                var result =
+                    await MessageBox.Show(
+                        owner,
+                        "Change gap?",
+                        string.Format(
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            "Old gap: {0}{4}" +
+                            "New gap: {1}{4}{4}" +
+                            "This will shift {2} subtitle{3} by {5}{6:0.00} s.",
+                            FormatFlowGapForConfirmation(oldGap),
+                            FormatFlowGapForConfirmation(newGap),
+                            affectedCount,
+                            affectedCount == 1 ? string.Empty : "s",
+                            Environment.NewLine,
+                            shift < TimeSpan.Zero ? "-" : "+",
+                            Math.Abs(shift.TotalSeconds)),
+                        MessageBoxButtons.Custom2,
+                        MessageBoxIcon.Warning,
+                        "Cancel",
+                        "Apply and shift");
+
+                if (result !=
+                    MessageBoxResult.Custom2)
+                {
+                    RefreshFlowGapDisplay();
+                    return;
+                }
+
+                ShiftFlowSubtitles(
+                    selectedIndex,
+                    shift);
+
+                Dispatcher.UIThread.Post(
+                    RefreshFlowGapDisplay);
+            };
+
+        flowGapAfterUpDown.ValueChanged +=
+            async (_, _) =>
+            {
+                if (updatingFlowGapControls)
+                {
+                    return;
+                }
+
+                var selected =
+                    vm.SelectedSubtitle;
+
+                if (selected == null)
+                {
+                    return;
+                }
+
+                var selectedIndex =
+                    vm.Subtitles.IndexOf(
+                        selected);
+
+                if (selectedIndex < 0 ||
+                    selectedIndex >=
+                    vm.Subtitles.Count - 1)
+                {
+                    return;
+                }
+
+                var next =
+                    vm.Subtitles[
+                        selectedIndex + 1];
+
+                var oldGap =
+                    next.StartTime -
+                    selected.EndTime;
+
+                var newGap =
+                    flowGapAfterUpDown.Value;
+
+                if (newGap < TimeSpan.Zero)
+                {
+                    newGap = TimeSpan.Zero;
+                }
+
+                var shift =
+                    newGap -
+                    oldGap;
+
+                if (shift == TimeSpan.Zero)
+                {
+                    return;
+                }
+
+                var affectedCount =
+                    vm.Subtitles
+                        .Skip(selectedIndex + 1)
+                        .Count(
+                            subtitle =>
+                                !subtitle.IsReferenceOnly);
+
+                var owner =
+                    TopLevel.GetTopLevel(
+                        flowGapAfterUpDown)
+                    as Window;
+
+                if (owner == null)
+                {
+                    RefreshFlowGapDisplay();
+                    return;
+                }
+
+                var result =
+                    await MessageBox.Show(
+                        owner,
+                        "Change gap?",
+                        string.Format(
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            "Old gap: {0}{4}" +
+                            "New gap: {1}{4}{4}" +
+                            "This will shift {2} subtitle{3} by {5}{6:0.00} s.",
+                            FormatFlowGapForConfirmation(oldGap),
+                            FormatFlowGapForConfirmation(newGap),
+                            affectedCount,
+                            affectedCount == 1 ? string.Empty : "s",
+                            Environment.NewLine,
+                            shift < TimeSpan.Zero ? "-" : "+",
+                            Math.Abs(shift.TotalSeconds)),
+                        MessageBoxButtons.Custom2,
+                        MessageBoxIcon.Warning,
+                        "Cancel",
+                        "Apply and shift");
+
+                if (result !=
+                    MessageBoxResult.Custom2)
+                {
+                    RefreshFlowGapDisplay();
+                    return;
+                }
+
+                ShiftFlowSubtitles(
+                    selectedIndex + 1,
+                    shift);
+
+                Dispatcher.UIThread.Post(
+                    RefreshFlowGapDisplay);
+            };
+
+        // Update the two Flow gaps immediately after timing edits.
+        flowShowUpDown.ValueChanged +=
+            (_, _) =>
+            {
+                Dispatcher.UIThread.Post(
+                    RefreshFlowGapDisplay);
+            };
+
+        flowHideUpDown.ValueChanged +=
+            (_, _) =>
+            {
+                Dispatcher.UIThread.Post(
+                    RefreshFlowGapDisplay);
+            };
+
+        flowDurationUpDown.ValueChanged +=
+            (_, _) =>
+            {
+                Dispatcher.UIThread.Post(
+                    RefreshFlowGapDisplay);
+            };
+
+        vm.PropertyChanged +=
+            (_, e) =>
+            {
+                if (e.PropertyName ==
+                        nameof(MainViewModel.SelectedSubtitle) ||
+                    e.PropertyName ==
+                        nameof(MainViewModel.SelectedSubtitleIndex))
+                {
+                    Dispatcher.UIThread.Post(
+                        RefreshFlowGapDisplay);
+                }
+            };
+
+        Grid.SetColumn(flowTimingPanel, 0);
+        editGrid.Children.Add(flowTimingPanel);
+
         // Right panel for text editing (show/duration is to the left)
         var textEditGrid = new Grid
         {
@@ -1636,6 +2289,17 @@ public static partial class InitListViewAndEditBox
             if (flowEditingView.IsVisible == activate &&
                 textEditor.IsVisible == !activate)
             {
+                timeControlsPanel.IsVisible =
+                    !activate;
+
+                flowTimingPanel.IsVisible =
+                    activate;
+
+                if (activate)
+                {
+                    RefreshFlowGapDisplay();
+                }
+
                 flowEditingButton.Content =
                     activate ? "✓ Flow" : "Flow";
 
@@ -1647,6 +2311,17 @@ public static partial class InitListViewAndEditBox
 
             textEditor.IsVisible =
                 !activate;
+
+            timeControlsPanel.IsVisible =
+                !activate;
+
+            flowTimingPanel.IsVisible =
+                activate;
+
+            if (activate)
+            {
+                RefreshFlowGapDisplay();
+            }
 
             flowEditingButton.Content =
                 activate ? "✓ Flow" : "Flow";
@@ -1734,12 +2409,27 @@ public static partial class InitListViewAndEditBox
                 return;
             }
 
-            // Keep the lightweight normal editor active during the import.
-            SetFlowEditingActive(
-                activate: false,
-                savePreference: false);
+            // Keep the lightweight text editor active while the EBU STL import finishes,
+// but reserve the Flow timing layout immediately so Show/Hide/Gap controls
+// do not visibly jump into place when Flow is restored.
+flowEditingView.IsVisible = false;
+textEditor.IsVisible = true;
 
-            RestoreRememberedFlowEditingDeferred();
+var restoreFlow =
+    Se.Settings.Appearance.EbuStlFlowEditingEnabled;
+
+timeControlsPanel.IsVisible =
+    !restoreFlow;
+
+flowTimingPanel.IsVisible =
+    restoreFlow;
+
+if (restoreFlow)
+{
+    RefreshFlowGapDisplay();
+}
+
+RestoreRememberedFlowEditingDeferred();
         };
 
         flowEditingButton.Click += (_, _) =>

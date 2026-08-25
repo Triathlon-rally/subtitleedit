@@ -1115,6 +1115,24 @@ namespace Nikse.SubtitleEdit.Core.SubtitleFormats
                     tti.VerticalPosition = (byte)startRow; // bottom (vertical)
                 }
 
+                // Final teletext safety net for double-height subtitles.
+                // A double-height text row occupies two physical teletext rows:
+                //   1 text line: VP 22 -> physical rows 22/23
+                //   2 text lines: VP 20 -> physical rows 20/21 and 22/23
+                // Therefore VP 23 is never valid for a double-height subtitle.
+                if (isTeletext &&
+                    Configuration.Settings.SubtitleSettings.EbuStlTeletextUseDoubleHeight)
+                {
+                    var textLineCount = Math.Max(1, Utilities.GetNumberOfLines(text));
+                    var physicalRowsNeeded = textLineCount * 2;
+                    var maximumStartRow = Math.Max(1, rows - physicalRowsNeeded + 1);
+
+                    if (tti.VerticalPosition > maximumStartRow)
+                    {
+                        tti.VerticalPosition = (byte)maximumStartRow;
+                    }
+                }
+
                 tti.JustificationCode = EbuUiHelper.JustificationCode; // use default justification
                 if (text.StartsWith("{\\an1}", StringComparison.Ordinal) || text.StartsWith("{\\an4}", StringComparison.Ordinal) || text.StartsWith("{\\an7}", StringComparison.Ordinal))
                 {

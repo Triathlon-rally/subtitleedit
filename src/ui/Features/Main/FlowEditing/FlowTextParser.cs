@@ -1,6 +1,8 @@
 using System;
 using System.Text.RegularExpressions;
+using Avalonia;
 using Avalonia.Media;
+using Avalonia.Styling;
 
 namespace Nikse.SubtitleEdit.Features.Main.FlowEditing;
 
@@ -20,10 +22,12 @@ public static partial class FlowTextParser
 
     public static FlowTextInfo Parse(string? text)
     {
-        var source = text ?? string.Empty;
+        var source =
+            text ?? string.Empty;
 
         var colorMatch =
-            FontColorRegex.Match(source);
+            FontColorRegex.Match(
+                source);
 
         var colorToken =
             colorMatch.Success
@@ -31,7 +35,8 @@ public static partial class FlowTextParser
                 : null;
 
         var alignmentMatch =
-            AlignmentTagRegex.Match(source);
+            AlignmentTagRegex.Match(
+                source);
 
         var alignmentToken =
             alignmentMatch.Success
@@ -60,11 +65,15 @@ public static partial class FlowTextParser
         string editedText)
     {
         var parsed =
-            Parse(originalText);
+            Parse(
+                originalText);
 
         var result =
             editedText;
 
+        // "No color" is a valid EBU/Teletext state. Do not invent a font tag:
+        // keeping ColorToken null is what makes the normal 37-character rule
+        // apply instead of the 36-character colour-code rule.
         if (!string.IsNullOrWhiteSpace(
                 parsed.ColorToken))
         {
@@ -76,25 +85,30 @@ public static partial class FlowTextParser
                 parsed.AlignmentToken))
         {
             result =
-                parsed.AlignmentToken + result;
+                parsed.AlignmentToken +
+                result;
         }
 
         return result;
     }
 
-    private static IBrush? ToBrush(
+    private static IBrush ToBrush(
         string? colorToken)
     {
+        // "No color" must still be visible in Flow. This display fallback is
+        // intentionally NOT written back into the subtitle, so the underlying
+        // subtitle remains colorless and continues to use the 37-char rule.
         if (string.IsNullOrWhiteSpace(
                 colorToken))
         {
-            return null;
+            return GetDefaultFlowForeground();
         }
 
         try
         {
             return new SolidColorBrush(
-                Color.Parse(colorToken));
+                Color.Parse(
+                    colorToken));
         }
         catch
         {
@@ -108,9 +122,20 @@ public static partial class FlowTextParser
                 "blue" => Brushes.Blue,
                 "magenta" => Brushes.Magenta,
                 "black" => Brushes.Black,
-                _ => null,
+                _ => GetDefaultFlowForeground(),
             };
         }
+    }
+
+    private static IBrush GetDefaultFlowForeground()
+    {
+        var isDark =
+            Application.Current?.ActualThemeVariant ==
+            ThemeVariant.Dark;
+
+        return isDark
+            ? Brushes.White
+            : Brushes.Black;
     }
 }
 
