@@ -1685,6 +1685,39 @@ public sealed class FlowEditingView : Border
                 textBox.CaretIndex =
                     wrappedText.Length;
 
+                // If a bottom-anchored one-line EBU subtitle (TT 22 in
+                // double-height mode) is automatically wrapped back to two
+                // lines by the live 36/37 rule, restore the correct bottom
+                // two-line start row (TT 20). Deliberately higher positions
+                // are not changed.
+                if (_vm.IsFormatEbu)
+                {
+                    var doubleHeight =
+                        Configuration.Settings.SubtitleSettings
+                            .EbuStlTeletextUseDoubleHeight;
+
+                    var oneLineBottomRow =
+                        TeletextRowHelper.GetBottomStartRow(
+                            1,
+                            doubleHeight);
+
+                    if (int.TryParse(
+                            item.Source.MarginV,
+                            NumberStyles.Integer,
+                            CultureInfo.InvariantCulture,
+                            out var currentRow) &&
+                        currentRow == oneLineBottomRow)
+                    {
+                        item.Source.MarginV =
+                            TeletextRowHelper
+                                .GetBottomStartRow(
+                                    2,
+                                    doubleHeight)
+                                .ToString(
+                                    CultureInfo.InvariantCulture);
+                    }
+                }
+
                 _lastValidTeletextText[item] =
                     wrappedText;
             }
@@ -2058,28 +2091,92 @@ public sealed class FlowEditingView : Border
         TextBox textBox,
         KeyEventArgs e)
     {
-        if ((e.Key != Key.Enter &&
-             e.Key != Key.Return) ||
-            e.KeyModifiers != KeyModifiers.None ||
-            textBox.SelectionStart !=
-            textBox.SelectionEnd)
+        if (e.Key != Key.Enter &&
+            e.Key != Key.Return)
         {
             return;
         }
 
-        var text =
+        e.Handled = true;
+
+        var originalText =
             textBox.Text ??
             string.Empty;
+
+        var originalSourceText =
+            item.Source.Text;
+
+        var originalMarginV =
+            item.Source.MarginV;
+
+        var originalCaretIndex =
+            textBox.CaretIndex;
+
+        var originalSelectionStart =
+            textBox.SelectionStart;
+
+        var originalSelectionEnd =
+            textBox.SelectionEnd;
+
+        if (originalCaretIndex == 0 &&
+            originalSelectionStart == originalSelectionEnd &&
+            GetPlainLineCount(originalText) == 1)
+        {
+            return;
+        }
+
+        var selectionStart =
+            Math.Min(
+                originalSelectionStart,
+                originalSelectionEnd);
+
+        var selectionEnd =
+            Math.Max(
+                originalSelectionStart,
+                originalSelectionEnd);
+
+        var text =
+            selectionStart == selectionEnd
+                ? originalText
+                : originalText.Remove(
+                    selectionStart,
+                    selectionEnd - selectionStart);
+
+        var caretIndex =
+            selectionStart == selectionEnd
+                ? originalCaretIndex
+                : selectionStart;
 
         var lineCount =
             GetPlainLineCount(
                 text);
 
         // First Return: create the second text line inside the SAME subtitle.
-        // Do not handle the key here; Avalonia's TextBox inserts the newline
-        // and places the caret directly behind it.
+        // Insert it here so modifiers and a text selection cannot bypass the
+        // Flow two-line limit.
         if (lineCount < 2)
         {
+            var updatedText =
+                text.Insert(
+                    caretIndex,
+                    Environment.NewLine);
+
+            textBox.Text =
+                updatedText;
+
+            var updatedCaretIndex =
+                caretIndex +
+                Environment.NewLine.Length;
+
+            textBox.CaretIndex =
+                updatedCaretIndex;
+
+            textBox.SelectionStart =
+                updatedCaretIndex;
+
+            textBox.SelectionEnd =
+                updatedCaretIndex;
+
             if (_vm.IsFormatEbu)
             {
                 var source =
@@ -2087,6 +2184,10 @@ public sealed class FlowEditingView : Border
 
                 var oldMarginV =
                     source.MarginV;
+
+                var oldLineCount =
+                    GetPlainLineCount(
+                        originalText);
 
                 Dispatcher.UIThread.Post(() =>
                 {
@@ -2098,7 +2199,7 @@ public sealed class FlowEditingView : Border
                         TeletextRowHelper
                             .GetRowKeepingBottomEdge(
                                 oldMarginV,
-                                oldLineCount: 1,
+                                oldLineCount,
                                 newLineCount: 2,
                                 doubleHeight);
 
@@ -2116,13 +2217,26 @@ public sealed class FlowEditingView : Border
 
         // Second Return: the subtitle already has two text lines, so Flow may
         // not insert a third line.
-        e.Handled = true;
+        if (selectionStart != selectionEnd)
+        {
+            textBox.Text =
+                text;
+
+            textBox.CaretIndex =
+                caretIndex;
+
+            textBox.SelectionStart =
+                caretIndex;
+
+            textBox.SelectionEnd =
+                caretIndex;
+        }
 
         // At the end of the second line there is no text to split off.
         // If that second line is empty (the common "Return, Return" workflow),
         // remove the trailing line break first so the previous subtitle becomes
         // a true one-line subtitle again, then create the next subtitle.
-        if (textBox.CaretIndex >=
+        if (caretIndex >=
             text.Length)
         {
             var normalizedText =
@@ -2166,9 +2280,33 @@ public sealed class FlowEditingView : Border
                 }
             }
 
-            await CreateSubtitleAfterAsync(
-                item,
-                focusAtStart: true);
+            var created =
+                await CreateSubtitleAfterAsync(
+                    item,
+                    focusAtStart: true);
+
+            if (!created)
+            {
+                textBox.Text =
+                    originalText;
+
+                item.Source.Text =
+                    originalSourceText;
+
+                item.Source.MarginV =
+                    originalMarginV;
+
+                textBox.CaretIndex =
+                    originalCaretIndex;
+
+                textBox.SelectionStart =
+                    originalSelectionStart;
+
+                textBox.SelectionEnd =
+                    originalSelectionEnd;
+
+                textBox.Focus();
+            }
 
             return;
         }
@@ -3555,9 +3693,95 @@ public sealed class FlowEditingView : Border
         {
             e.Handled = true;
 
+            if (string.IsNullOrEmpty(
+                    textBox.Text))
+            {
+                DeleteEmptySubtitleAndFocusPrevious(
+                    item);
+
+                return;
+            }
+
             MergeWithPrevious(
                 item);
         }
+    }
+
+    private bool DeleteEmptySubtitleAndFocusPrevious(
+        FlowEditingItem currentItem)
+    {
+        var subtitles =
+            _vm.Subtitles;
+
+        var currentIndex =
+            subtitles.IndexOf(
+                currentItem.Source);
+
+        if (currentIndex <= 0 ||
+            currentItem.Source.IsReferenceOnly)
+        {
+            return false;
+        }
+
+        var previous =
+            subtitles[currentIndex - 1];
+
+        subtitles.RemoveAt(
+            currentIndex);
+
+        RenumberSubtitles();
+
+        _selectedSources.Clear();
+        _selectedSources.Add(
+            previous);
+
+        _selectionAnchorSource =
+            previous;
+
+        _pendingFocusSource =
+            previous;
+
+        _pendingFocusAtStart =
+            false;
+
+        _vm.SelectedSubtitle =
+            previous;
+
+        Refresh();
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            var targetItem =
+                _items.FirstOrDefault(
+                    x => ReferenceEquals(
+                        x.Source,
+                        previous));
+
+            if (targetItem != null &&
+                _textBoxes.TryGetValue(
+                    targetItem,
+                    out var targetTextBox))
+            {
+                var targetTextLength =
+                    (targetTextBox.Text ??
+                     string.Empty).Length;
+
+                targetTextBox.CaretIndex =
+                    targetTextLength;
+
+                targetTextBox.SelectionStart =
+                    targetTextLength;
+
+                targetTextBox.SelectionEnd =
+                    targetTextLength;
+
+                targetTextBox.Focus();
+            }
+
+            CenterSelectedSubtitleInFlow();
+        });
+
+        return true;
     }
 
     private bool MergeWithPrevious(
@@ -3629,9 +3853,11 @@ public sealed class FlowEditingView : Border
                 hasColor ? 36 : 37;
 
             var rebalanced =
-                RebalanceTeletextVisibleText(
-                    mergedVisibleText,
-                    maxCharacters);
+                mergedVisibleText.Length <= maxCharacters
+                    ? mergedVisibleText
+                    : RebalanceTeletextVisibleText(
+                        mergedVisibleText,
+                        maxCharacters);
 
             if (!IsValidTeletextVisibleText(
                     rebalanced,
@@ -3652,6 +3878,34 @@ public sealed class FlowEditingView : Border
                 }
 
                 return true;
+            }
+        }
+
+        if (_vm.IsFormatEbu)
+        {
+            var mergedVisibleText =
+                (previousParsed.Text.TrimEnd() + " " +
+                 currentParsed.Text.TrimStart()).Trim();
+
+            var hasColor =
+                !string.IsNullOrWhiteSpace(previousParsed.ColorToken) ||
+                !string.IsNullOrWhiteSpace(currentParsed.ColorToken);
+
+            var maxCharacters =
+                hasColor ? 36 : 37;
+
+            if (mergedVisibleText.Length <=
+                maxCharacters)
+            {
+                previous.Text =
+                    FlowTextParser.ApplyEditedText(
+                        previous.Text,
+                        previousParsed.Text.TrimEnd());
+
+                currentItem.Source.Text =
+                    FlowTextParser.ApplyEditedText(
+                        currentItem.Source.Text,
+                        currentParsed.Text.TrimStart());
             }
         }
 
@@ -3683,6 +3937,32 @@ public sealed class FlowEditingView : Border
         // import. A later Flow step handles any conflict with following TCs.
         ApplySeOptimalDurationKeepingStart(
             previous);
+
+        if (_vm.IsFormatEbu)
+        {
+            // The normal SE merge updates the text but does not know about our
+            // Flow-specific bottom-anchored Teletext convention. Re-apply the
+            // correct TT start row from the FINAL merged line count:
+            // 1 line -> TT 22, 2 lines -> TT 20 in double-height mode.
+            var doubleHeight =
+                Configuration.Settings.SubtitleSettings
+                    .EbuStlTeletextUseDoubleHeight;
+
+            var mergedLineCount =
+                Math.Clamp(
+                    GetPlainLineCount(
+                        previous.Text),
+                    1,
+                    2);
+
+            previous.MarginV =
+                TeletextRowHelper
+                    .GetBottomStartRow(
+                        mergedLineCount,
+                        doubleHeight)
+                    .ToString(
+                        CultureInfo.InvariantCulture);
+        }
 
         Dispatcher.UIThread.Post(
             async () =>
@@ -3859,6 +4139,19 @@ public sealed class FlowEditingView : Border
 
         ApplySeOptimalDurationKeepingStart(
             current);
+
+        // The previous subtitle may now run into the current subtitle, and
+        // the current subtitle may run into its follower. Reuse Flow's normal
+        // user-confirmed ripple handling for both boundaries.
+        Dispatcher.UIThread.Post(
+            async () =>
+            {
+                await OfferShiftFollowingSubtitlesAsync(
+                    previous);
+
+                await OfferShiftFollowingSubtitlesAsync(
+                    current);
+            });
 
         _pendingFocusSource =
             previous;
