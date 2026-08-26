@@ -1483,6 +1483,7 @@ public sealed class FlowEditingView : Border
                 ApplyNewEbuFlowPresentation(
                     newSubtitle,
                     positionTemplate,
+                    currentItem.Source,
                     pasteItem.Text);
             }
 
@@ -1577,6 +1578,7 @@ public sealed class FlowEditingView : Border
                 ApplyNewEbuFlowPresentation(
                     newSubtitle,
                     positionTemplate,
+                    currentItem.Source,
                     pasteItem.Text);
             }
 
@@ -2391,13 +2393,19 @@ public sealed class FlowEditingView : Border
     private static void ApplyNewEbuFlowPresentation(
         SubtitleLineViewModel newSubtitle,
         SubtitleLineViewModel positionTemplate,
+        SubtitleLineViewModel colorSource,
         string visibleText)
     {
-        // New Flow subtitles deliberately use the broadcast-friendly defaults:
-        // explicit yellow colour and horizontal Center. In SE5 Center is the
-        // default alignment, so no {\\an...} tag is written.
+        var sourceColor =
+            FlowTextParser.Parse(
+                colorSource.Text)
+                .ColorToken;
+
         newSubtitle.Text =
-            $"<font color=\"yellow\">{visibleText}</font>";
+            string.IsNullOrWhiteSpace(
+                sourceColor)
+                ? visibleText
+                : $"<font color=\"yellow\">{visibleText}</font>";
 
         var doubleHeight =
             Configuration.Settings.SubtitleSettings
@@ -2606,6 +2614,7 @@ public sealed class FlowEditingView : Border
             ApplyNewEbuFlowPresentation(
                 newSubtitle,
                 positionTemplate,
+                source,
                 string.Empty);
         }
 
@@ -2767,6 +2776,7 @@ public sealed class FlowEditingView : Border
             ApplyNewEbuFlowPresentation(
                 newSubtitle,
                 positionTemplate,
+                source,
                 string.Empty);
         }
 
