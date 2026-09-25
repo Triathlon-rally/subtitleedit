@@ -328,6 +328,46 @@ public class ArtePreviewTests
     }
 
     [AvaloniaFact]
+    public void FrameRateConversion_KeepsArteStartTimeCodeReference()
+    {
+        const double startTimeCodeMs = 10 * 60 * 60 * 1000;
+        const double sourceFrameRate = 23.976;
+        const double targetFrameRate = 25.0;
+
+        var source = new Subtitle();
+        source.Paragraphs.Add(new Paragraph(
+            string.Empty,
+            startTimeCodeMs,
+            startTimeCodeMs + 200));
+
+        source.Paragraphs.Add(new Paragraph(
+            "First subtitle",
+            startTimeCodeMs + 43_000,
+            startTimeCodeMs + 45_000));
+
+        var vm = Create(source, "ARTE blank subtitle");
+        vm.SelectedSourceFrameRate = sourceFrameRate;
+        vm.AnalyzeCommand.Execute(null);
+        vm.OkCommand.Execute(null);
+
+        var result = vm.FixedSubtitle!;
+
+        // The ARTE programme start is an absolute reference and must never move.
+        Assert.Equal(startTimeCodeMs, result.Paragraphs[0].StartTime.TotalMilliseconds);
+
+        // Only the distance from the ARTE programme start is frame-rate converted.
+        var factor = (24_000.0 / 1_001.0) / targetFrameRate;
+
+        var expectedStart =
+            startTimeCodeMs + 43_000 * factor;
+
+        Assert.Equal(
+            expectedStart,
+            result.Paragraphs[1].StartTime.TotalMilliseconds,
+            precision: 6);
+    }
+
+    [AvaloniaFact]
     public void AutomaticSplit_KeepsTextTimingAndLaterEdits()
     {
         var source = new Subtitle();

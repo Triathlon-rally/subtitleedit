@@ -655,7 +655,10 @@ public partial class CheckArteErrorsViewModel : ObservableObject
         // timeline that Start correction will apply later.
         if (Math.Abs(SelectedSourceFrameRate - 25.0) > 0.001)
         {
-            subtitle.ChangeFrameRate(SelectedSourceFrameRate, 25.0);
+            ChangeFrameRateKeepingStartTimeCodeReference(
+                subtitle,
+                SelectedSourceFrameRate,
+                25.0);
         }
 
         // ARTE target header/language is mandatory setup, not an optional checklist item.
@@ -919,6 +922,30 @@ public partial class CheckArteErrorsViewModel : ObservableObject
         }
 
         return Math.Floor(first.StartTime.TotalMilliseconds / 3_600_000.0) * 3_600_000.0;
+    }
+
+    private static void ChangeFrameRateKeepingStartTimeCodeReference(
+        Subtitle subtitle,
+        double oldFrameRate,
+        double newFrameRate)
+    {
+        if (subtitle.Paragraphs.Count == 0)
+        {
+            return;
+        }
+
+        var referenceMs = GetStartTimeCodeReference(subtitle);
+        var factor =
+            SubtitleFormat.GetFrameForCalculation(oldFrameRate) /
+            SubtitleFormat.GetFrameForCalculation(newFrameRate);
+
+        foreach (var paragraph in subtitle.Paragraphs)
+        {
+            paragraph.StartTime.TotalMilliseconds =
+                referenceMs + (paragraph.StartTime.TotalMilliseconds - referenceMs) * factor;
+            paragraph.EndTime.TotalMilliseconds =
+                referenceMs + (paragraph.EndTime.TotalMilliseconds - referenceMs) * factor;
+        }
     }
 
     private void AnalyzeStartTimeCodeShift(Subtitle subtitle)
@@ -1701,7 +1728,10 @@ public partial class CheckArteErrorsViewModel : ObservableObject
         // Apply the same conversion first so those proposals match this correction copy.
         if (convertFrameRate)
         {
-            fixedSubtitle.ChangeFrameRate(sourceFrameRate, 25.0);
+            ChangeFrameRateKeepingStartTimeCodeReference(
+                fixedSubtitle,
+                sourceFrameRate,
+                25.0);
             applied++;
         }
 
