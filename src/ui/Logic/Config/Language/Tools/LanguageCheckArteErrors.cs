@@ -60,6 +60,8 @@ public class LanguageCheckArteErrors
     public string DurationBelowShortMinimumX { get; set; }
     public string DurationBelowToleratedMinimumX { get; set; }
     public string DurationAboveMaximumX { get; set; }
+    public string OptionalTcInAdjustment { get; set; }
+    public string NoSafeDurationAdjustmentAlarm { get; set; }
     public string OptionalTcOutAdjustment { get; set; }
     public string NoSafeTcOutAdjustmentAlarm { get; set; }
     public string CannotCreateGapAlarmX { get; set; }
@@ -143,6 +145,8 @@ public class LanguageCheckArteErrors
         DurationBelowShortMinimumX = "Duration {0} is below the accepted short-duration minimum of {1} frames.";
         DurationBelowToleratedMinimumX = "Duration {0} is below the tolerated minimum {1} ({2}% tolerance; configured requirement {3}).";
         DurationAboveMaximumX = "Duration {0} exceeds the configured maximum {1}.";
+        OptionalTcInAdjustment = "Optional TC In adjustment.";
+        NoSafeDurationAdjustmentAlarm = "ALARM: No safe TC Out or TC In adjustment is possible.";
         OptionalTcOutAdjustment = "Optional TC Out adjustment.";
         NoSafeTcOutAdjustmentAlarm = "ALARM: No safe TC Out adjustment is possible.";
         CannotCreateGapAlarmX = "ALARM: Cannot create {0}-frame gap between UT {1} and UT {2} without reducing one of the subtitles below its accepted minimum duration.";

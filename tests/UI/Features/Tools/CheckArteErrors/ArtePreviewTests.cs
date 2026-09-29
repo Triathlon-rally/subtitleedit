@@ -10,7 +10,7 @@ public class ArtePreviewTests
 {
     private static CheckArteErrorsViewModel Create(Subtitle source, params string[] checks)
     {
-        var vm = new CheckArteErrorsViewModel();
+        var vm = new CheckArteErrorsViewModel(new StubWindowService(), new StubFileHelper());
         foreach (var check in vm.Checks)
         {
             check.IsSelected = checks.Contains(check.Name);
@@ -18,8 +18,82 @@ public class ArtePreviewTests
         // Avoid Initialize's persisted gap-setting side effect in tests.
         typeof(CheckArteErrorsViewModel).GetField("_sourceSnapshot", BindingFlags.NonPublic | BindingFlags.Instance)!
             .SetValue(vm, new Subtitle(source, generateNewId: false));
-        vm.AnalyzeCommand.Execute(null);
+        Analyze(vm);
         return vm;
+    }
+
+    private static void Analyze(CheckArteErrorsViewModel vm) =>
+        typeof(CheckArteErrorsViewModel).GetMethod("Analyze", BindingFlags.NonPublic | BindingFlags.Instance,
+            Type.EmptyTypes)!.Invoke(vm, null);
+
+    [AvaloniaTheory]
+    [InlineData(16, 20, 12, "out", true)]
+    [InlineData(16, 5, 12, "in", true)]
+    [InlineData(16, 5, 12, "none", false)]
+    [InlineData(5, 5, 12, "none", true)]
+    [InlineData(11, 5, 12, "in", true)]
+    [InlineData(10, 5, 12, "none", true)]
+    [InlineData(9, 7, 12, "none", true)]
+    [InlineData(16, 5, 18, "valid", true)]
+    public void MinimumDuration_UsesOneCompleteSideAndPreservesNeighbours(int beforeGap, int afterGap, int frames, string expected, bool acceptShortDurations)
+    {
+        using var settings = new SettingsScope("General.SubtitleMinimumDisplayMilliseconds", "General.SubtitleMaximumDisplayMilliseconds", "General.SubtitleMaximumCharactersPerSeconds");
+        Nikse.SubtitleEdit.Logic.Config.Se.Settings.General.SubtitleMinimumDisplayMilliseconds = 1000;
+        Nikse.SubtitleEdit.Logic.Config.Se.Settings.General.SubtitleMaximumDisplayMilliseconds = 8000;
+        Nikse.SubtitleEdit.Logic.Config.Se.Settings.General.SubtitleMaximumCharactersPerSeconds = 25;
+        var start = ((10 * 3600 + 2 * 60 + 41) * 25 + 6) * 40.0;
+        var end = start + frames * 40;
+        var source = new Subtitle();
+        source.Paragraphs.Add(new Paragraph("Previous", start - beforeGap * 40 - 2000, start - beforeGap * 40));
+        source.Paragraphs.Add(new Paragraph("Cue", start, end));
+        source.Paragraphs.Add(new Paragraph("Next", end + afterGap * 40, end + afterGap * 40 + 2000));
+        source.Paragraphs.Add(new Paragraph("Later", end + 6000, end + 8000));
+        var vm = Create(source, "Display duration");
+        vm.AcceptShortDurations = acceptShortDurations;
+        vm.ShortMinimumFrames = 18;
+        vm.MinimumGapFrames = 5;
+        Analyze(vm);
+        var fix = vm.Fixes.SingleOrDefault(f => f.Index == 2);
+        if (expected == "valid") { Assert.Null(fix); return; }
+        Assert.NotNull(fix);
+        Assert.Equal(expected != "none", fix.CanBeFixed);
+        if (expected == "in") { Assert.Contains("TC In", fix.Reason); Assert.DoesNotContain("No safe", fix.Reason); }
+        foreach (var item in vm.Fixes) item.Apply = item == fix && fix.CanBeFixed;
+        vm.OkCommand.Execute(null);
+        var result = vm.FixedSubtitle ?? source;
+        Assert.Equal(expected == "in" ? end - 18 * 40 : start, result.Paragraphs[1].StartTime.TotalMilliseconds);
+        Assert.Equal(expected == "out" ? start + 18 * 40 : end, result.Paragraphs[1].EndTime.TotalMilliseconds);
+        foreach (var i in new[] { 0, 2, 3 })
+            Assert.Equal(System.Text.Json.JsonSerializer.Serialize(source.Paragraphs[i]), System.Text.Json.JsonSerializer.Serialize(result.Paragraphs[i]));
+        Assert.Equal(start, source.Paragraphs[1].StartTime.TotalMilliseconds);
+        Assert.Equal(end, source.Paragraphs[1].EndTime.TotalMilliseconds);
+        if (expected != "none" && acceptShortDurations) Assert.DoesNotContain(vm.Fixes, f => f.Index == 2);
+    }
+
+    [AvaloniaTheory]
+    [InlineData(4, true, false)]
+    [InlineData(6, true, true)]
+    [InlineData(100, true, true)]
+    [InlineData(100, false, true)]
+    public void MinimumDuration_RespectsDocumentBoundaries(int startFrame, bool hasFollower, bool canFix)
+    {
+        var start = startFrame * 40.0;
+        var source = new Subtitle();
+        source.Paragraphs.Add(new Paragraph("Cue", start, start + 480));
+        if (hasFollower) source.Paragraphs.Add(new Paragraph("Next", start + 680, start + 2680));
+        var vm = Create(source, "Display duration");
+        vm.AcceptShortDurations = true;
+        vm.ShortMinimumFrames = 18;
+        vm.MinimumGapFrames = 5;
+        Analyze(vm);
+        var fix = Assert.Single(vm.Fixes, item => item.Index == 1 &&
+            item.FixKind == CheckArteErrorsViewModel.ArteFixKind.DisplayDuration);
+        Assert.Equal(canFix, fix.CanBeFixed);
+        if (!canFix) return;
+        fix.Apply = true;
+        vm.OkCommand.Execute(null);
+        Assert.Equal(hasFollower ? start - 240 : start, vm.FixedSubtitle!.Paragraphs[0].StartTime.TotalMilliseconds);
+        Assert.Equal(hasFollower ? start + 480 : start + 720, vm.FixedSubtitle.Paragraphs[0].EndTime.TotalMilliseconds);
     }
 
     [AvaloniaTheory]
@@ -40,7 +114,7 @@ public class ArtePreviewTests
         var vm = Create(source);
         vm.SelectedLanguage = vm.Languages.Single(item => item.Code == language);
         vm.IsSdh = sdh;
-        vm.AnalyzeCommand.Execute(null);
+        Analyze(vm);
         Assert.Single(vm.Fixes);
         Assert.Equal(25.0, vm.SelectedSourceFrameRate);
         vm.OkCommand.Execute(null);
@@ -172,7 +246,7 @@ public class ArtePreviewTests
         source.Paragraphs.Add(new Paragraph("<font color=\"f02030\">Red</font> <font color=\"blue\">blue</font>", 1000, 4000));
         var vm = Create(source, "Teletext colors");
         vm.IsSdh = true;
-        vm.AnalyzeCommand.Execute(null);
+        Analyze(vm);
 
         var fix = Assert.Single(vm.Fixes.Where(item => item.Reason.Contains("nearest Teletext standard color")));
         Assert.True(fix.CanBeFixed);
@@ -253,7 +327,7 @@ public class ArtePreviewTests
         var vm = Create(source, "Teletext colors");
         vm.SelectedLanguage = vm.Languages.Single(item => item.Code == languageCode);
         vm.IsSdh = false;
-        vm.AnalyzeCommand.Execute(null);
+        Analyze(vm);
 
         var fix = Assert.Single(vm.Fixes);
         Assert.Equal("Boxed text", fix.After);
@@ -347,7 +421,7 @@ public class ArtePreviewTests
 
         var vm = Create(source, "ARTE blank subtitle");
         vm.SelectedSourceFrameRate = sourceFrameRate;
-        vm.AnalyzeCommand.Execute(null);
+        Analyze(vm);
         vm.OkCommand.Execute(null);
 
         var result = vm.FixedSubtitle!;

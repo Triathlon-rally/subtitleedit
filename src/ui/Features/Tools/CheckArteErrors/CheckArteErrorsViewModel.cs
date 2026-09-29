@@ -1041,11 +1041,30 @@ public partial class CheckArteErrorsViewModel : ObservableObject
                 ? RoundToArteFrame(paragraph.StartTime.TotalMilliseconds +
                     (AcceptShortDurations ? shortMinimum : requiredMinimum))
                 : RoundToArteFrame(paragraph.StartTime.TotalMilliseconds + maximumMs);
+            // ARTE analysis already uses the 25-fps target timeline (40 ms per frame).
+            // Extend a below-absolute-minimum cue on one side only, never partially.
+            var belowAbsoluteMinimum = isTooShort && duration < shortMinimum;
+            var requiredFrames = (long)Math.Ceiling(Math.Max(shortMinimum, (AcceptShortDurations ? shortMinimum : requiredMinimum)) / 40.0);
+            if (belowAbsoluteMinimum)
+                desiredEnd = ((long)Math.Ceiling(paragraph.StartTime.TotalMilliseconds / 40.0) + requiredFrames) * 40.0;
             var nextStart = i + 1 < subtitle.Paragraphs.Count
                 ? subtitle.Paragraphs[i + 1].StartTime.TotalMilliseconds - MinimumGapMilliseconds
                 : double.PositiveInfinity;
             var canFix = desiredEnd > paragraph.StartTime.TotalMilliseconds && desiredEnd <= nextStart &&
                          (!isTooLong || desiredEnd >= requiredMinimum + paragraph.StartTime.TotalMilliseconds);
+            double? proposedStart = null;
+            if (belowAbsoluteMinimum && !canFix)
+            {
+                var startFrame = (long)Math.Floor(paragraph.EndTime.TotalMilliseconds / 40.0) - requiredFrames;
+                var earliestFrame = i > 0
+                    ? (long)Math.Ceiling((subtitle.Paragraphs[i - 1].EndTime.TotalMilliseconds + MinimumGapMilliseconds) / 40.0)
+                    : 0L;
+                if (startFrame >= earliestFrame)
+                {
+                    proposedStart = startFrame * 40.0;
+                    canFix = true;
+                }
+            }
             var issue = isTooShort
                 ? AcceptShortDurations
                     ? string.Format(Se.Language.Tools.CheckArteErrors.DurationBelowShortMinimumX,
@@ -1056,12 +1075,19 @@ public partial class CheckArteErrorsViewModel : ObservableObject
                 : string.Format(Se.Language.Tools.CheckArteErrors.DurationAboveMaximumX,
                     FormatFrames(duration), FormatFrames(maximumMs));
             Fixes.Add(new ArteFixItem(canFix, i + 1, FormatFrames(duration),
-                canFix ? FormatFrames(desiredEnd - paragraph.StartTime.TotalMilliseconds) : string.Empty,
-                canFix ? issue + " " + Se.Language.Tools.CheckArteErrors.OptionalTcOutAdjustment
-                    : issue + " " + Se.Language.Tools.CheckArteErrors.NoSafeTcOutAdjustmentAlarm,
+                canFix ? FormatFrames(proposedStart.HasValue
+                    ? paragraph.EndTime.TotalMilliseconds - proposedStart.Value
+                    : desiredEnd - paragraph.StartTime.TotalMilliseconds) : string.Empty,
+                canFix ? issue + " " + (proposedStart.HasValue
+                    ? Se.Language.Tools.CheckArteErrors.OptionalTcInAdjustment
+                    : Se.Language.Tools.CheckArteErrors.OptionalTcOutAdjustment)
+                    : issue + " " + (belowAbsoluteMinimum
+                        ? Se.Language.Tools.CheckArteErrors.NoSafeDurationAdjustmentAlarm
+                        : Se.Language.Tools.CheckArteErrors.NoSafeTcOutAdjustmentAlarm),
                 ArteFixKind.DisplayDuration, applyByDefault: false)
             {
-                ProposedEndMs = canFix ? desiredEnd : null,
+                ProposedStartMs = proposedStart,
+                ProposedEndMs = canFix && !proposedStart.HasValue ? desiredEnd : null,
             });
         }
     }
@@ -1760,7 +1786,10 @@ public partial class CheckArteErrorsViewModel : ObservableObject
                     break;
 
                 case ArteFixKind.DisplayDuration:
-                    paragraph.EndTime = new TimeCode(fix.ProposedEndMs!.Value);
+                    if (fix.ProposedStartMs.HasValue)
+                        paragraph.StartTime = new TimeCode(fix.ProposedStartMs.Value);
+                    if (fix.ProposedEndMs.HasValue)
+                        paragraph.EndTime = new TimeCode(fix.ProposedEndMs.Value);
                     applied++;
                     break;
 
