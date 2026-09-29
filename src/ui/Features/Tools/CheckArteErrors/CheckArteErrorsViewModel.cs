@@ -1252,7 +1252,7 @@ public partial class CheckArteErrorsViewModel : ObservableObject
             // higher on the screen untouched.
             if (hasRow &&
                 ((lineCount == 1 && currentRow == TeletextRowHelper.BottomRow) ||
-                 (lineCount == 2 && currentRow == TeletextRowHelper.BottomRow - 1)))
+                 (lineCount == 2 && currentRow > expectedBottomRow)))
             {
                 Fixes.Add(new ArteFixItem(
                     true,

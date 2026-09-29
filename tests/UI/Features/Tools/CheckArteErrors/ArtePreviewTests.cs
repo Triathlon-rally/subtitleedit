@@ -303,17 +303,20 @@ public class ArtePreviewTests
         source.Paragraphs.Add(new Paragraph(string.Empty, 0, 200) { MarginV = "23" });
         source.Paragraphs.Add(new Paragraph("One line", 1000, 4000) { MarginV = "23" });
         source.Paragraphs.Add(new Paragraph("First line\nSecond line", 5000, 8000) { MarginV = "22" });
+        source.Paragraphs.Add(new Paragraph("First line\nSecond line", 9000, 12000) { MarginV = "21" });
         var vm = Create(source, "Teletext line position");
 
         Assert.Collection(vm.Fixes,
             blank => Assert.Equal("22", blank.After),
             oneLine => Assert.Equal("22", oneLine.After),
-            twoLines => Assert.Equal("20", twoLines.After));
+            twoLinesRow22 => Assert.Equal("20", twoLinesRow22.After),
+            twoLinesRow21 => Assert.Equal("20", twoLinesRow21.After));
 
         vm.OkCommand.Execute(null);
         Assert.Equal("22", vm.FixedSubtitle!.Paragraphs[0].MarginV);
         Assert.Equal("22", vm.FixedSubtitle.Paragraphs[1].MarginV);
         Assert.Equal("20", vm.FixedSubtitle.Paragraphs[2].MarginV);
+        Assert.Equal("20", vm.FixedSubtitle.Paragraphs[3].MarginV);
     }
 
     [AvaloniaFact]
