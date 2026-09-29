@@ -70,6 +70,46 @@ public class ArtePreviewTests
         if (expected != "none" && acceptShortDurations) Assert.DoesNotContain(vm.Fixes, f => f.Index == 2);
     }
 
+    [AvaloniaFact]
+    public void MinimumDuration_StrictFollowUpUsesTcInFallback()
+    {
+        using var settings = new SettingsScope("General.SubtitleMinimumDisplayMilliseconds", "General.SubtitleMaximumDisplayMilliseconds", "General.SubtitleMaximumCharactersPerSeconds");
+        Nikse.SubtitleEdit.Logic.Config.Se.Settings.General.SubtitleMinimumDisplayMilliseconds = 1000;
+        Nikse.SubtitleEdit.Logic.Config.Se.Settings.General.SubtitleMaximumDisplayMilliseconds = 8000;
+        Nikse.SubtitleEdit.Logic.Config.Se.Settings.General.SubtitleMaximumCharactersPerSeconds = 25;
+        var start = ((10 * 3600 + 2 * 60 + 41) * 25) * 40.0;
+        var end = start + 18 * 40;
+        var previousEnd = start - 16 * 40;
+        var source = new Subtitle();
+        source.Paragraphs.Add(new Paragraph("Previous", previousEnd - 2000, previousEnd));
+        source.Paragraphs.Add(new Paragraph("Cue", start, end));
+        source.Paragraphs.Add(new Paragraph("Next", end + 5 * 40, end + 5 * 40 + 2000));
+        var vm = Create(source, "Display duration");
+        vm.AcceptShortDurations = false;
+        vm.ReadingDurationTolerancePercent = 15;
+        vm.ShortMinimumFrames = 18;
+        vm.MinimumGapFrames = 5;
+        Analyze(vm);
+        var fix = Assert.Single(vm.Fixes, item => item.Index == 2 &&
+            item.FixKind == CheckArteErrorsViewModel.ArteFixKind.DisplayDuration);
+        Assert.True(fix.CanBeFixed);
+        Assert.Contains("TC In", fix.Reason);
+        Assert.Equal("0 s 18 fr", fix.BeforePreview);
+        Assert.Equal("1 s 00 fr", fix.AfterPreview);
+        fix.Apply = true;
+        vm.OkCommand.Execute(null);
+        var result = vm.FixedSubtitle!;
+        Assert.Equal(end - 25 * 40, result.Paragraphs[1].StartTime.TotalMilliseconds);
+        Assert.Equal(end, result.Paragraphs[1].EndTime.TotalMilliseconds);
+        Assert.Equal(9 * 40, result.Paragraphs[1].StartTime.TotalMilliseconds - result.Paragraphs[0].EndTime.TotalMilliseconds);
+        foreach (var i in new[] { 0, 2 })
+        {
+            Assert.Equal(source.Paragraphs[i].Text, result.Paragraphs[i].Text);
+            Assert.Equal(source.Paragraphs[i].StartTime.TotalMilliseconds, result.Paragraphs[i].StartTime.TotalMilliseconds);
+            Assert.Equal(source.Paragraphs[i].EndTime.TotalMilliseconds, result.Paragraphs[i].EndTime.TotalMilliseconds);
+        }
+    }
+
     [AvaloniaTheory]
     [InlineData(4, true, false)]
     [InlineData(6, true, true)]

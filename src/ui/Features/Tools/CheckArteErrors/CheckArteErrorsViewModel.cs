@@ -1042,10 +1042,9 @@ public partial class CheckArteErrorsViewModel : ObservableObject
                     (AcceptShortDurations ? shortMinimum : requiredMinimum))
                 : RoundToArteFrame(paragraph.StartTime.TotalMilliseconds + maximumMs);
             // ARTE analysis already uses the 25-fps target timeline (40 ms per frame).
-            // Extend a below-absolute-minimum cue on one side only, never partially.
-            var belowAbsoluteMinimum = isTooShort && duration < shortMinimum;
+            // Extend a too-short cue on one side only, never partially.
             var requiredFrames = (long)Math.Ceiling(Math.Max(shortMinimum, (AcceptShortDurations ? shortMinimum : requiredMinimum)) / 40.0);
-            if (belowAbsoluteMinimum)
+            if (isTooShort)
                 desiredEnd = ((long)Math.Ceiling(paragraph.StartTime.TotalMilliseconds / 40.0) + requiredFrames) * 40.0;
             var nextStart = i + 1 < subtitle.Paragraphs.Count
                 ? subtitle.Paragraphs[i + 1].StartTime.TotalMilliseconds - MinimumGapMilliseconds
@@ -1053,7 +1052,7 @@ public partial class CheckArteErrorsViewModel : ObservableObject
             var canFix = desiredEnd > paragraph.StartTime.TotalMilliseconds && desiredEnd <= nextStart &&
                          (!isTooLong || desiredEnd >= requiredMinimum + paragraph.StartTime.TotalMilliseconds);
             double? proposedStart = null;
-            if (belowAbsoluteMinimum && !canFix)
+            if (isTooShort && !canFix)
             {
                 var startFrame = (long)Math.Floor(paragraph.EndTime.TotalMilliseconds / 40.0) - requiredFrames;
                 var earliestFrame = i > 0
@@ -1081,7 +1080,7 @@ public partial class CheckArteErrorsViewModel : ObservableObject
                 canFix ? issue + " " + (proposedStart.HasValue
                     ? Se.Language.Tools.CheckArteErrors.OptionalTcInAdjustment
                     : Se.Language.Tools.CheckArteErrors.OptionalTcOutAdjustment)
-                    : issue + " " + (belowAbsoluteMinimum
+                    : issue + " " + (isTooShort
                         ? Se.Language.Tools.CheckArteErrors.NoSafeDurationAdjustmentAlarm
                         : Se.Language.Tools.CheckArteErrors.NoSafeTcOutAdjustmentAlarm),
                 ArteFixKind.DisplayDuration, applyByDefault: false)
