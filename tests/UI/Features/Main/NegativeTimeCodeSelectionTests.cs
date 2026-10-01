@@ -72,6 +72,15 @@ public class NegativeTimeCodeSelectionTests : IDisposable
         }
     }
 
+    private static void Select(MainViewModel vm, params int[] indices)
+    {
+        vm.SubtitleGrid.SelectedItems!.Clear();
+        foreach (var index in indices)
+        {
+            vm.SubtitleGrid.SelectedItems.Add(vm.Subtitles[index]);
+        }
+    }
+
     [AvaloniaFact]
     public void AdjustAllTimesBeforeZero_SurvivesSelectingEveryLine()
     {
@@ -116,5 +125,65 @@ public class NegativeTimeCodeSelectionTests : IDisposable
 
         Assert.Equal(TimeSpan.FromSeconds(-3), startTimeEditor.Value);
         Assert.StartsWith("-00:00:03", textBox.Text);
+    }
+
+    [AvaloniaTheory]
+    [InlineData(400)]
+    [InlineData(-400)]
+    public void AdjustSelectedLines_MovesOnlyTheSelectionAndPreservesDuration(int offsetMilliseconds)
+    {
+        var (_, vm) = ShowMainWindowWithLines(4);
+        Select(vm, 1, 2);
+        var before = vm.Subtitles.Select(p => (p.StartTime, p.EndTime, p.Duration)).ToArray();
+
+        vm.Adjust(TimeSpan.FromMilliseconds(offsetMilliseconds), adjustAll: false,
+            adjustSelectedLines: true, adjustSelectedLinesAndForward: false);
+
+        Assert.Equal(before[0], (vm.Subtitles[0].StartTime, vm.Subtitles[0].EndTime, vm.Subtitles[0].Duration));
+        Assert.Equal(before[3], (vm.Subtitles[3].StartTime, vm.Subtitles[3].EndTime, vm.Subtitles[3].Duration));
+        foreach (var index in new[] { 1, 2 })
+        {
+            Assert.Equal(before[index].StartTime + TimeSpan.FromMilliseconds(offsetMilliseconds), vm.Subtitles[index].StartTime);
+            Assert.Equal(before[index].EndTime + TimeSpan.FromMilliseconds(offsetMilliseconds), vm.Subtitles[index].EndTime);
+            Assert.Equal(before[index].Duration, vm.Subtitles[index].Duration);
+        }
+    }
+
+    [AvaloniaFact]
+    public void AdjustSelectedLines_GappedSelectionAllowsOverlapWithoutMovingNeighbours()
+    {
+        var (_, vm) = ShowMainWindowWithLines(4);
+        Select(vm, 1, 3);
+        var firstNeighbor = (vm.Subtitles[0].StartTime, vm.Subtitles[0].EndTime);
+        var middleNeighbor = (vm.Subtitles[2].StartTime, vm.Subtitles[2].EndTime);
+
+        vm.Adjust(TimeSpan.FromSeconds(-1), adjustAll: false,
+            adjustSelectedLines: true, adjustSelectedLinesAndForward: false);
+
+        Assert.Equal(firstNeighbor, (vm.Subtitles[0].StartTime, vm.Subtitles[0].EndTime));
+        Assert.Equal(middleNeighbor, (vm.Subtitles[2].StartTime, vm.Subtitles[2].EndTime));
+        Assert.True(vm.Subtitles[1].StartTime < vm.Subtitles[0].EndTime);
+        Assert.True(vm.Subtitles[3].StartTime < vm.Subtitles[2].EndTime);
+    }
+
+    [AvaloniaTheory]
+    [InlineData(400)]
+    [InlineData(-400)]
+    public void AdjustSelectedLinesAndForward_StartsAtTheFirstSelectedLine(int offsetMilliseconds)
+    {
+        var (_, vm) = ShowMainWindowWithLines(4);
+        Select(vm, 1, 3);
+        var before = vm.Subtitles.Select(p => (p.StartTime, p.EndTime, p.Duration)).ToArray();
+        var offset = TimeSpan.FromMilliseconds(offsetMilliseconds);
+
+        vm.Adjust(offset, adjustAll: false, adjustSelectedLines: false, adjustSelectedLinesAndForward: true);
+
+        Assert.Equal(before[0], (vm.Subtitles[0].StartTime, vm.Subtitles[0].EndTime, vm.Subtitles[0].Duration));
+        for (var index = 1; index < vm.Subtitles.Count; index++)
+        {
+            Assert.Equal(before[index].StartTime + offset, vm.Subtitles[index].StartTime);
+            Assert.Equal(before[index].EndTime + offset, vm.Subtitles[index].EndTime);
+            Assert.Equal(before[index].Duration, vm.Subtitles[index].Duration);
+        }
     }
 }
