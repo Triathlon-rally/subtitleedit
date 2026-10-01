@@ -1,6 +1,7 @@
 using Avalonia.Controls.Documents;
 using Avalonia.Headless.XUnit;
 using Avalonia.Media;
+using Nikse.SubtitleEdit.Core.SubtitleFormats;
 using Nikse.SubtitleEdit.Logic;
 using Nikse.SubtitleEdit.Logic.Config;
 using Nikse.SubtitleEdit.Logic.ValueConverters;
@@ -90,6 +91,77 @@ public class ValueConverterTests : IDisposable
     {
         var run = Assert.IsType<Run>(Assert.Single(inlines));
         return run;
+    }
+
+    private static string FormatGap(double milliseconds, double frameRate = 25, bool useFrameMode = true)
+    {
+        var previousUseFrameMode = Se.Settings.General.UseFrameMode;
+        var previousFrameRate = Se.Settings.General.CurrentFrameRate;
+        try
+        {
+            Se.Settings.General.UseFrameMode = useFrameMode;
+            Se.Settings.General.CurrentFrameRate = frameRate;
+            return (string)new DoubleToDisplayShortConverter().Convert(
+                milliseconds, typeof(string), null, Culture)!;
+        }
+        finally
+        {
+            Se.Settings.General.UseFrameMode = previousUseFrameMode;
+            Se.Settings.General.CurrentFrameRate = previousFrameRate;
+        }
+    }
+
+    [Theory]
+    [InlineData(0, "00:00")]
+    [InlineData(40, "00:01")]
+    [InlineData(960, "00:24")]
+    [InlineData(1000, "01:00")]
+    [InlineData(59_920, "59:23")]
+    [InlineData(59_960, "59:24")]
+    [InlineData(60_000, "00:01:00:00")]
+    [InlineData(60_040, "00:01:00:01")]
+    [InlineData(300_000, "00:05:00:00")]
+    [InlineData(3_600_000, "01:00:00:00")]
+    [InlineData(-200, "-00:05")]
+    [InlineData(-60_000, "-00:01:00:00")]
+    public void GapFrameDisplay_UsesCompactFormatUntilOneMinute(double milliseconds, string expected)
+    {
+        Assert.Equal(expected, FormatGap(milliseconds));
+    }
+
+    [Theory]
+    [InlineData(23.976, "59:23")]
+    [InlineData(24, "59:23")]
+    [InlineData(25, "59:24")]
+    [InlineData(29.97, "59:29")]
+    [InlineData(30, "59:29")]
+    public void GapFrameDisplay_UsesCurrentFrameRateAtMinuteBoundary(double frameRate, string expectedLastFrame)
+    {
+        var minuteFrames = SubtitleFormat.MillisecondsToFrames(60_000, frameRate);
+        var lastFrameMilliseconds = SubtitleFormat.FramesToMilliseconds(minuteFrames - 1, frameRate);
+        var firstMinuteFrameMilliseconds = SubtitleFormat.FramesToMilliseconds(minuteFrames, frameRate);
+
+        Assert.Equal(expectedLastFrame, FormatGap(lastFrameMilliseconds, frameRate));
+        Assert.Equal("00:01:00:00", FormatGap(firstMinuteFrameMilliseconds, frameRate));
+    }
+
+    [Theory]
+    [InlineData(19.999, "00:00")]
+    [InlineData(20, "00:01")]
+    [InlineData(20.001, "00:01")]
+    [InlineData(59_979.999, "59:24")]
+    [InlineData(59_980, "00:01:00:00")]
+    [InlineData(59_980.001, "00:01:00:00")]
+    public void GapFrameDisplay_RoundsAwayFromZeroBeforeFormatting(double milliseconds, string expected)
+    {
+        Assert.Equal(expected, FormatGap(milliseconds));
+    }
+
+    [Fact]
+    public void GapDisplay_PreservesSentinelAndMillisecondMode()
+    {
+        Assert.Equal(string.Empty, FormatGap(double.MaxValue));
+        Assert.Equal("12,280", FormatGap(12_280, useFrameMode: false));
     }
 
     [AvaloniaFact]

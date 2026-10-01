@@ -1,5 +1,6 @@
 using Avalonia.Data.Converters;
 using Nikse.SubtitleEdit.Core.Common;
+using Nikse.SubtitleEdit.Core.SubtitleFormats;
 using Nikse.SubtitleEdit.Logic.Config;
 using System;
 using System.Globalization;
@@ -29,11 +30,51 @@ public class DoubleToDisplayShortConverter : IValueConverter
 
             _formattingTimeCode.TotalMilliseconds = ms;
             return useFrameMode
-                ? _formattingTimeCode.ToShortStringHHMMSSFF()
+                ? FormatFrameGap(ms)
                 : _formattingTimeCode.ToShortString();
         }
 
         return useFrameMode ? ZeroFrameMode : ZeroTime;
+    }
+
+    private static string FormatFrameGap(double milliseconds)
+    {
+        var frameRate = Se.Settings.General.CurrentFrameRate;
+        if (frameRate <= 0)
+        {
+            return new TimeCode(milliseconds).ToShortStringHHMMSSFF();
+        }
+
+        // Round the complete gap once with Subtitle Edit's normal frame conversion. Both the
+        // minute threshold and the displayed value must use that same whole-frame result.
+        var signedFrames = SubtitleFormat.MillisecondsToFrames(milliseconds, frameRate);
+        var totalFrames = Math.Abs((long)signedFrames);
+        var framesPerMinute = SubtitleFormat.MillisecondsToFrames(60_000, frameRate);
+        var roundedMilliseconds = SubtitleFormat.FramesToMilliseconds(totalFrames, frameRate);
+
+        var totalSeconds = roundedMilliseconds / 1000;
+        var millisecondsInSecond = roundedMilliseconds % 1000;
+        var frames = SubtitleFormat.MillisecondsToFrames(millisecondsInSecond, frameRate);
+
+        // Fractional rates can put the rounded millisecond value at the end of the preceding
+        // second (for example 59,993 ms at 29.97 fps). Preserve TimeCode's existing carry rule.
+        if (frames >= frameRate - 0.001)
+        {
+            totalSeconds++;
+            frames = 0;
+        }
+
+        var sign = signedFrames < 0 ? "-" : string.Empty;
+        if (totalFrames < framesPerMinute)
+        {
+            return $"{sign}{totalSeconds:00}:{frames:00}";
+        }
+
+        var seconds = totalSeconds % 60;
+        var totalMinutes = totalSeconds / 60;
+        var minutes = totalMinutes % 60;
+        var hours = totalMinutes / 60;
+        return $"{sign}{hours:00}:{minutes:00}:{seconds:00}:{frames:00}";
     }
 
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
