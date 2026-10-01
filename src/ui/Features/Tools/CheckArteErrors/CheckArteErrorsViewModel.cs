@@ -1492,11 +1492,36 @@ public partial class CheckArteErrorsViewModel : ObservableObject
         return normalized;
     }
 
+    private static bool HasExplicitForegroundColor(string text) =>
+        FontColorAttributeRegex.IsMatch(BoxTagRegex.Replace(text, string.Empty));
+
+    private static bool IsYellowSubtitle(string text)
+    {
+        if (!HasExplicitForegroundColor(text))
+        {
+            return false;
+        }
+
+        var colorRuns = FlowInlineColorProjection.Parse(text).ColorRuns;
+        return colorRuns.Count > 0 &&
+               colorRuns.All(run => string.Equals(run.Color, "Yellow", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string RemoveForegroundColorTags(string text) =>
+        Regex.Replace(text, @"<font\b[^>]*\bcolor\s*=[^>]*>(?<text>.*?)</font\s*>", "${text}",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
     private void AnalyzeTeletextColors(Subtitle subtitle)
     {
-        // A normal ARTE file which deliberately uses a colour must use yellow consistently.
-        // A completely uncoloured file remains uncoloured.
-        var useYellowForNormalSubtitles = !IsSdh && subtitle.Paragraphs.Any(paragraph => FontColorAttributeRegex.IsMatch(paragraph.Text));
+        // Normal ARTE subtitles use the prevailing presentation already present in
+        // the document. Other colours do not vote, and a tie deliberately keeps the
+        // control-code-free No color presentation.
+        var nonEmptyParagraphs = subtitle.Paragraphs
+            .Where(paragraph => !string.IsNullOrWhiteSpace(paragraph.Text))
+            .ToList();
+        var noColorCount = nonEmptyParagraphs.Count(paragraph => !HasExplicitForegroundColor(paragraph.Text));
+        var yellowCount = nonEmptyParagraphs.Count(paragraph => IsYellowSubtitle(paragraph.Text));
+        var useYellowForNormalSubtitles = !IsSdh && yellowCount > noColorCount;
 
         for (var i = 0; i < subtitle.Paragraphs.Count; i++)
         {
@@ -1507,12 +1532,13 @@ public partial class CheckArteErrorsViewModel : ObservableObject
             // invisible in both the grid and Flow.
             var withoutBoxing = IsSdh ? text : BoxTagRegex.Replace(text, string.Empty);
             var normalized = NormalizeTeletextColors(withoutBoxing, IsSdh, out var hasUnsupportedColor);
-            if (useYellowForNormalSubtitles && !string.IsNullOrWhiteSpace(text))
+            if (!IsSdh && !string.IsNullOrWhiteSpace(text))
             {
-                // A colour can begin on a later line. Remove the individual colour spans
-                // and apply one Yellow run to the complete subtitle instead.
-                normalized = Regex.Replace(normalized, @"<font\b[^>]*\bcolor\s*=[^>]*>(?<text>.*?)</font\s*>", "${text}", RegexOptions.IgnoreCase | RegexOptions.Singleline);
-                normalized = "<font color=\"Yellow\">" + normalized + "</font>";
+                normalized = RemoveForegroundColorTags(normalized);
+                if (useYellowForNormalSubtitles)
+                {
+                    normalized = "<font color=\"Yellow\">" + normalized + "</font>";
+                }
             }
             if (normalized != text)
             {

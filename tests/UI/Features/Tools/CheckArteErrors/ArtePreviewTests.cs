@@ -26,6 +26,41 @@ public class ArtePreviewTests
         typeof(CheckArteErrorsViewModel).GetMethod("Analyze", BindingFlags.NonPublic | BindingFlags.Instance,
             Type.EmptyTypes)!.Invoke(vm, null);
 
+    private static (CheckArteErrorsViewModel Vm, string[] Proposed) AnalyzeColorScenario(bool isSdh, params string[] texts)
+    {
+        var source = new Subtitle();
+        for (var i = 0; i < texts.Length; i++)
+        {
+            source.Paragraphs.Add(new Paragraph(texts[i], i * 4000 + 1000, i * 4000 + 4000));
+        }
+
+        var vm = Create(source, "Teletext colors");
+        if (isSdh)
+        {
+            vm.SelectedLanguage = vm.Languages.Single(item => item.Code == "2D");
+            vm.IsSdh = true;
+            Analyze(vm);
+        }
+
+        var proposed = texts.ToArray();
+        foreach (var fix in vm.Fixes.Where(item => item.FixKind == CheckArteErrorsViewModel.ArteFixKind.TeletextColor))
+        {
+            proposed[fix.Index - 1] = fix.After;
+        }
+
+        return (vm, proposed);
+    }
+
+    private static string ColorScenarioText(char code) => code switch
+    {
+        'N' => "No color",
+        'Y' => "<font color=\"Yellow\">Yellow</font>",
+        'C' => "<font color=\"Cyan\">Cyan</font>",
+        'G' => "<font color=\"Green\">Green</font>",
+        'R' => "<font color=\"Red\">Red</font>",
+        _ => throw new ArgumentOutOfRangeException(nameof(code)),
+    };
+
     [AvaloniaTheory]
     [InlineData(16, 20, 12, "out", true)]
     [InlineData(16, 5, 12, "in", true)]
@@ -320,32 +355,106 @@ public class ArtePreviewTests
     }
 
     [AvaloniaFact]
-    public void NormalArteSubtitle_ConvertsTeletextColorsToYellow()
+    public void NormalArteSubtitle_WithOnlyAnotherColorUsesNoColorTieBreak()
     {
         var source = new Subtitle();
         source.Paragraphs.Add(new Paragraph("<font color=\"Blue\">Hello</font>", 1000, 4000));
         var vm = Create(source, "Teletext colors");
 
-        var fix = Assert.Single(vm.Fixes);
-        Assert.Equal("<font color=\"Yellow\">Hello</font>", fix.After);
-        vm.OkCommand.Execute(null);
-        Assert.Equal(fix.After, vm.FixedSubtitle!.Paragraphs[0].Text);
+        var fix = Assert.Single(vm.Fixes.Where(item => item.FixKind == CheckArteErrorsViewModel.ArteFixKind.TeletextColor));
+        Assert.Equal("Hello", fix.After);
     }
 
     [AvaloniaFact]
-    public void NormalArteSubtitle_UsesYellowConsistentlyWhenTheFileUsesColor()
+    public void NormalArteSubtitle_NoColorMajorityRemovesColoredOutlier()
     {
         var source = new Subtitle();
         source.Paragraphs.Add(new Paragraph("<font color=\"Red\">Red</font>", 1000, 4000));
         source.Paragraphs.Add(new Paragraph("No color", 5000, 8000));
         var vm = Create(source, "Teletext colors");
 
-        Assert.Equal("<font color=\"Yellow\">Red</font>", vm.Fixes.Single(item => item.Index == 1).After);
-        Assert.Equal("<font color=\"Yellow\">No color</font>", vm.Fixes.Single(item => item.Index == 2).After);
+        Assert.Equal("Red", vm.Fixes.Single(item => item.Index == 1 &&
+            item.FixKind == CheckArteErrorsViewModel.ArteFixKind.TeletextColor).After);
+        Assert.DoesNotContain(vm.Fixes, item => item.Index == 2 &&
+            item.FixKind == CheckArteErrorsViewModel.ArteFixKind.TeletextColor);
+    }
+
+    [AvaloniaTheory]
+    [InlineData("N,N,N,N,N", false)]
+    [InlineData("N,N,N,N,C", false)]
+    [InlineData("N,N,N,N,Y", false)]
+    [InlineData("Y,Y,Y,Y,C", true)]
+    [InlineData("Y,Y,Y,Y,N", true)]
+    [InlineData("N,Y", false)]
+    [InlineData("C,G,R", false)]
+    public void NormalArteSubtitle_UsesNoColorUnlessYellowHasARealMajority(string scenario, bool expectYellow)
+    {
+        var texts = scenario.Split(',').Select(value => ColorScenarioText(value[0])).ToArray();
+        var (_, proposed) = AnalyzeColorScenario(false, texts);
+
+        Assert.All(proposed, text =>
+        {
+            if (expectYellow)
+            {
+                Assert.StartsWith("<font color=\"Yellow\">", text);
+            }
+            else
+            {
+                Assert.DoesNotContain("color=", text, StringComparison.OrdinalIgnoreCase);
+            }
+        });
     }
 
     [AvaloniaFact]
-    public void NormalArteSubtitle_RemovesSdhBoxingBeforeNormalizingToYellow()
+    public void SdhArteSubtitle_PreservesMixedStandardColorsAndNoColor()
+    {
+        var texts = new[]
+        {
+            ColorScenarioText('Y'), ColorScenarioText('C'), ColorScenarioText('G'), ColorScenarioText('N'),
+        };
+        var (vm, proposed) = AnalyzeColorScenario(true, texts);
+
+        Assert.Equal(texts, proposed);
+        Assert.DoesNotContain(vm.Fixes, item => item.FixKind == CheckArteErrorsViewModel.ArteFixKind.TeletextColor);
+    }
+
+    [AvaloniaFact]
+    public void NoColorMajority_KeepsA37CharacterLineValidAfterRemovingTheOutlierColor()
+    {
+        var exact37 = new string('a', 37);
+        var source = new Subtitle();
+        source.Paragraphs.Add(new Paragraph(exact37, 1000, 4000));
+        source.Paragraphs.Add(new Paragraph("No color two", 5000, 8000));
+        source.Paragraphs.Add(new Paragraph("No color three", 9000, 12000));
+        source.Paragraphs.Add(new Paragraph("No color four", 13000, 16000));
+        source.Paragraphs.Add(new Paragraph("<font color=\"Cyan\">Outlier</font>", 17000, 20000));
+        var vm = Create(source, "Teletext colors", "Teletext line length / control codes");
+
+        var colorFix = Assert.Single(vm.Fixes.Where(item => item.FixKind == CheckArteErrorsViewModel.ArteFixKind.TeletextColor));
+        Assert.Equal("Outlier", colorFix.After);
+        Assert.DoesNotContain(vm.Fixes, item => item.Index == 1 && (item.FixKind is
+            CheckArteErrorsViewModel.ArteFixKind.Rebalance or CheckArteErrorsViewModel.ArteFixKind.Split));
+    }
+
+    [AvaloniaFact]
+    public void YellowMajority_StillChargesTheColorControlCellBeforeLayoutPlanning()
+    {
+        var source = new Subtitle();
+        for (var i = 0; i < 4; i++)
+        {
+            source.Paragraphs.Add(new Paragraph($"<font color=\"Yellow\">Yellow {i}</font>", i * 4000 + 1000, i * 4000 + 4000));
+        }
+        source.Paragraphs.Add(new Paragraph("123456789012345678 123456789012345678", 17000, 22000));
+        var vm = Create(source, "Teletext colors", "Teletext line length / control codes");
+
+        Assert.StartsWith("<font color=\"Yellow\">", vm.Fixes.Single(item => item.Index == 5 &&
+            item.FixKind == CheckArteErrorsViewModel.ArteFixKind.TeletextColor).After);
+        Assert.Contains(vm.Fixes, item => item.Index == 5 && (item.FixKind is
+            CheckArteErrorsViewModel.ArteFixKind.Rebalance or CheckArteErrorsViewModel.ArteFixKind.Split));
+    }
+
+    [AvaloniaFact]
+    public void NormalArteSubtitle_RemovesSdhBoxingBeforeNormalizingToNoColor()
     {
         var source = new Subtitle();
         source.Paragraphs.Add(new Paragraph("<font color=\"Red\">Colored cue</font>", 1000, 4000));
@@ -353,7 +462,7 @@ public class ArtePreviewTests
         var vm = Create(source, "Teletext colors");
 
         var boxingFix = vm.Fixes.Single(item => item.Index == 2);
-        Assert.Equal("<font color=\"Yellow\">Previously boxed SDH cue</font>", boxingFix.After);
+        Assert.Equal("Previously boxed SDH cue", boxingFix.After);
         Assert.Contains("boxing is removed", boxingFix.Reason);
 
         vm.OkCommand.Execute(null);

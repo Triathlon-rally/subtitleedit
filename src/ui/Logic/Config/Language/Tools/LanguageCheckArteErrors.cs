@@ -157,7 +157,7 @@ public class LanguageCheckArteErrors
         NoTeletextPositionX = "No Teletext position is set; propose bottom position for {0}-line subtitle.";
         ColorMapped = "Color is mapped to the nearest Teletext standard color.";
         NormalNoSdhBoxing = "Normal ARTE subtitles do not use SDH boxing; boxing is removed and color is normalized.";
-        NormalYellowOrNoColor = "Normal ARTE subtitles use yellow or no color; color is changed to Yellow.";
+        NormalYellowOrNoColor = "Normal ARTE subtitles use the document's prevailing no-color or yellow presentation.";
         UnsupportedColor = "Color is not a hexadecimal or Teletext standard color and cannot be mapped automatically.";
         ItalicNotAllowed = "Italic is not allowed. Remove italic tags.";
         NothingToReport = "Nothing to report.";
